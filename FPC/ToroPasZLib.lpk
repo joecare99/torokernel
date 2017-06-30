@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <Package Version="4">
+    <PathDelim Value="\"/>
+    <Name Value="ToroPasZLib"/>
+    <CompilerOptions>
+      <Version Value="11"/>
+      <PathDelim Value="\"/>
+      <SearchPaths>
+        <IncludeFiles Value="..\rtl\PasZLib\src;..\..\include"/>
+        <Libraries Value="$(PkgOutDir)"/>
+        <OtherUnitFiles Value="..\rtl\PasZLib\src"/>
+        <UnitOutputDirectory Value="..\lib\$(PkgName)\$(TargetCPU)-$(TargetOS)"/>
+      </SearchPaths>
+      <CodeGeneration>
+        <SmartLinkUnit Value="True"/>
+        <RelocatableUnit Value="True"/>
+      </CodeGeneration>
+      <Other>
+        <CustomOptions Value="-dBorland -dVer150 -dDelphi7 -dCompiler6_Up -dPUREPASCAL"/>
+      </Other>
+    </CompilerOptions>
+    <Files Count="21">
+      <Item1>
+        <HasRegisterProc Value="True"/>
+      </Item1>
+      <Item2>
+        <Filename Value="..\rtl\PasZLib\src\toro.adler.pas"/>
+        <UnitName Value="toro.adler"/>
+      </Item2>
+      <Item3>
+        <Filename Value="..\rtl\PasZLib\src\toro.gzio.pas"/>
+        <UnitName Value="toro.gzio"/>
+      </Item3>
+      <Item4>
+        <Filename Value="..\rtl\PasZLib\src\toro.infblock.pas"/>
+        <UnitName Value="toro.infblock"/>
+      </Item4>
+      <Item5>
+        <Filename Value="..\rtl\PasZLib\src\toro.infcodes.pas"/>
+        <UnitName Value="toro.infcodes"/>
+      </Item5>
+      <Item6>
+        <Filename Value="..\rtl\PasZLib\src\toro.InfFast.pas"/>
+        <UnitName Value="toro.InfFast"/>
+      </Item6>
+      <Item7>
+        <Filename Value="..\rtl\PasZLib\src\toro.inftrees.pas"/>
+        <UnitName Value="toro.inftrees"/>
+      </Item7>
+      <Item8>
+        <Filename Value="..\rtl\PasZLib\src\toro.infutil.pas"/>
+        <UnitName Value="toro.infutil"/>
+      </Item8>
+      <Item9>
+        <Filename Value="..\rtl\PasZLib\src\toro.paszlib.pas"/>
+        <UnitName Value="toro.paszlib"/>
+      </Item9>
+      <Item10>
+        <Filename Value="..\rtl\PasZLib\src\toro.trees.pas"/>
+        <UnitName Value="toro.trees"/>
+      </Item10>
+      <Item11>
+        <Filename Value="..\rtl\PasZLib\src\toro.Unzip.pas"/>
+        <UnitName Value="toro.Unzip"/>
+      </Item11>
+      <Item12>
+        <Filename Value="..\rtl\PasZLib\src\toro.zbase.pas"/>
+        <UnitName Value="toro.zbase"/>
+      </Item12>
+      <Item13>
+        <Filename Value="..\rtl\PasZLib\src\toro.zCompres.pas"/>
+        <UnitName Value="toro.zCompres"/>
+      </Item13>
+      <Item14>
+        <Filename Value="..\rtl\PasZLib\src\zconf.inc"/>
+        <Type Value="Include"/>
+      </Item14>
+      <Item15>
+        <Filename Value="..\rtl\PasZLib\src\toro.zdeflate.pas"/>
+        <UnitName Value="toro.zdeflate"/>
+      </Item15>
+      <Item16>
+        <Filename Value="..\rtl\PasZLib\src\toro.zinflate.pas"/>
+        <UnitName Value="toro.zinflate"/>
+      </Item16>
+      <Item17>
+        <Filename Value="..\rtl\PasZLib\src\toro.zip.pas"/>
+        <UnitName Value="toro.zip"/>
+      </Item17>
+      <Item18>
+        <Filename Value="..\rtl\PasZLib\src\toro.zipper.pp"/>
+        <UnitName Value="toro.zipper"/>
+      </Item18>
+      <Item19>
+        <Filename Value="..\rtl\PasZLib\src\toro.ziputils.pas"/>
+        <UnitName Value="toro.ziputils"/>
+      </Item19>
+      <Item20>
+        <Filename Value="..\rtl\PasZLib\src\toro.zstream.pp"/>
+        <UnitName Value="toro.zstream"/>
+      </Item20>
+      <Item21>
+        <Filename Value="..\rtl\PasZLib\src\toro.zuncompr.pas"/>
+        <UnitName Value="toro.zuncompr"/>
+      </Item21>
+    </Files>
+    <PublishOptions>
+      <Version Value="2"/>
+    </PublishOptions>
+  </Package>
+</CONFIG>

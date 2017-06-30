@@ -49,10 +49,14 @@ procedure DivMod(Dividend: Integer; Divisor: Word; var Result, Remainder: Word);
 function StrLen(const P: PAnsiChar): Cardinal;
 {$ENDIF}
 
+Procedure sleep(m:Cardinal);
+
 var
   FormatSettings: TFormatSettings;
 
 implementation
+
+uses Process;
 
 function CompareMem(P1, P2: Pointer; Length: cardinal): Boolean;
 var
@@ -148,6 +152,11 @@ begin
      end ;
   if (result = 0) then
     result:=(count1-count2);
+end;
+
+procedure sleep(m: Cardinal);
+begin
+  Process.Sleep(m);
 end;
 
 {$IFDEF DCC}

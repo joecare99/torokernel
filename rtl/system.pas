@@ -13,6 +13,7 @@
 
 unit System;
 {$WARN 5033 off : Function result does not seem to be set}
+
 interface
 
 {$DEFINE FPC_IS_SYSTEM}
@@ -23,6 +24,7 @@ interface
 
 {$I-,Q-,H-,R-,V-}
 {$mode objfpc}
+{$modeswitch advancedrecords on}
 
 { Using inlining for small system functions/wrappers }
 {$inline on}
@@ -57,11 +59,12 @@ type
   DWORD    = LongWord;
   Cardinal = LongWord;
   Integer  = SmallInt;
-
+  UInt64   = QWord;
 
   {$define DEFAULT_DOUBLE}
-  ValReal = Double;
 
+  ValReal = Double;
+  Real = ValReal;
   { map comp to int64, but this doesn't mean we compile the comp support in! }
   {$ifndef Linux}
    Comp = Int64;
@@ -71,17 +74,34 @@ type
 
   {$define SUPPORT_SINGLE}
   {$define SUPPORT_DOUBLE}
-
+ {$IfDef CPU64}
   SizeInt = Int64;
   SizeUInt = QWord;
   PtrInt = Int64;
   PtrUInt = QWord;
   ValSInt = Int64;
   ValUInt = QWord;
+  CodePointer = Pointer;
+  CodePtrInt = PtrInt;
+  CodePtrUInt = PtrUInt;
+{$EndIf CPU64}
+
+{$IFDEF CPU32}
+  SizeInt = Longint;
+  SizeUInt = DWord;
+  PtrInt = Longint;
+  PtrUInt = DWORD;
+  ValSInt = Longint;
+  ValUInt = Cardinal;
+  CodePointer = Pointer;
+  CodePtrInt = PtrInt;
+  CodePtrUInt = PtrUInt;
+{$ENDIF CPU32}
 
 { Zero - terminated strings }
   PChar               = ^Char;
   PPChar              = ^PChar;
+  PPPChar             = ^PPChar;
 
   { AnsiChar is equivalent of Char, so we need
     to use type renamings }
@@ -89,6 +109,7 @@ type
   AnsiChar            = Char;
   PAnsiChar           = PChar;
   PPAnsiChar          = PPChar;
+  PPPAnsiChar         = PPPChar;
 
   RawByteString = AnsiString;
   TSystemCodePage = Word;
@@ -98,11 +119,14 @@ type
   PUTF8String         = ^UTF8String;
 
   HRESULT             = type Longint;
-  TDateTime           = type Int64;
+  TDateTime           = type Double;
+  TDate               = type TDateTime;
+  TTime               = type TDateTime;
   Error               = type Longint;
 
   PSingle             = ^Single;
   PDouble             = ^Double;
+  PPDouble            = ^PDouble;
   PCurrency           = ^Currency;
   PExtended           = ^Extended;
 
@@ -118,10 +142,18 @@ type
   PQWord              = ^QWord;
   PInt64              = ^Int64;
   PPtrInt             = ^PtrInt;
+  PPtrUInt            = ^PtrUInt;
   PSizeInt            = ^SizeInt;
+  PSizeUInt           = ^SizeUInt;
+
+  PPByte              = ^PByte;
+  PPLongint           = ^PLongint;
 
   PPointer            = ^Pointer;
   PPPointer           = ^PPointer;
+
+  PCodePointer        = ^CodePointer;
+  PPCodePointer       = ^PCodePointer;
 
   PBoolean            = ^Boolean;
   PWordBool           = ^WordBool;
@@ -131,6 +163,7 @@ type
   PAnsiString         = ^AnsiString;
 
   PDate               = ^TDateTime;
+  PDateTime           = ^TDateTime;
   PError              = ^Error;
   PVariant            = ^Variant;
   POleVariant         = ^OleVariant;
@@ -139,16 +172,17 @@ type
   TFileTextRecChar    = {$if defined(FPC_ANSI_TEXTFILEREC) or not(defined(FPC_HAS_FEATURE_WIDESTRINGS))}AnsiChar{$else}UnicodeChar{$endif};
   PFileTextRecChar    = ^TFileTextRecChar;
 
-  CodePointer = pointer;
-
   TTextLineBreakStyle = (tlbsLF,tlbsCRLF,tlbsCR);
 
-  LARGE_INTEGER = record
-    case byte of
-      0: (LowPart : DWORD;
-          HighPart : DWORD);
-      1: (QuadPart : QWORD);
-  end;
+  { procedure type }
+    TProcedure  = Procedure;
+
+        LARGE_INTEGER = record
+        case byte of
+          0: (LowPart : DWORD;
+              HighPart : DWORD);
+          1: (QuadPart : QWORD);
+       end;
 
    TSystemTime = record
       wYear, wMonth, wDay, wDayOfWeek : word;
@@ -160,9 +194,7 @@ type
     dwHighDateTime : DWORD;
   end;
 
-{ procedure type }
-  TProcedure  = Procedure;
-  
+
 type
   THandle = QWord;
   TThreadID = THandle;
@@ -371,6 +403,15 @@ Function swap (X : Int64) : Int64;{$ifdef SYSTEMINLINE}inline;{$endif}[interncon
 Function Align (Addr : PtrUInt; Alignment : PtrUInt) : PtrUInt;{$ifdef SYSTEMINLINE}inline;{$endif}
 Function Align (Addr : Pointer; Alignment : PtrUInt) : Pointer;{$ifdef SYSTEMINLINE}inline;{$endif}
 
+{$ifdef FPC_HAS_FEATURE_RANDOM}
+Function  Random(l:longint):longint;
+Function  Random(l:int64):int64;
+{$ifndef FPUNONE}
+Function  Random: extended;
+{$endif}
+Procedure Randomize;
+{$endif FPC_HAS_FEATURE_RANDOM}
+
 Function abs(l:Longint):Longint;[internconst:fpc_in_const_abs];{$ifdef SYSTEMINLINE}inline;{$endif}
 Function abs(l:Int64):Int64;[internconst:fpc_in_const_abs];{$ifdef SYSTEMINLINE}inline;{$endif}
 Function sqr(l:Longint):Longint;[internconst:fpc_in_const_sqr];{$ifdef SYSTEMINLINE}inline;{$endif}
@@ -380,6 +421,13 @@ Function odd(l:Longint):Boolean;[internconst:fpc_in_const_odd];{$ifdef SYSTEMINL
 Function odd(l:Longword):Boolean;[internconst:fpc_in_const_odd];{$ifdef SYSTEMINLINE}inline;{$endif}
 Function odd(l:Int64):Boolean;[internconst:fpc_in_const_odd];{$ifdef SYSTEMINLINE}inline;{$endif}
 Function odd(l:QWord):Boolean;[internconst:fpc_in_const_odd];{$ifdef SYSTEMINLINE}inline;{$endif}
+
+{$ifndef FPUNONE}
+{ float math routines }
+{$I mathh.inc}
+{$endif}
+{ currency math routines }
+{$I currh.inc}
 
 {****************************************************************************
                       PChar and String Handling
@@ -1262,7 +1310,7 @@ type
     FreememSize         : function(p:pointer;Size:ptrint):ptrint;
     AllocMem            : function(Size:ptrint):Pointer;
     //ReAllocMem          : function(var P: Pointer; OldSize, NewSize: PtrInt): Pointer;
-	  ReAllocMem          : Function(var p:pointer;Size:ptruint):Pointer;
+	ReAllocMem          : Function(var p:pointer;Size:ptruint):Pointer;
     MemSize             : function(p:pointer):ptrint;
   end;
 
@@ -1469,6 +1517,13 @@ var
 
 implementation
 
+var
+{$ifdef VER3_0}
+  SysInstance : qword;
+  FPCSysInstance: PQWord = @SysInstance; public name '_FPC_SysInstance';
+{$else VER3_0}
+  FPCSysInstance : PQWord;public name '_FPC_SysInstance';
+{$endif VER3_0}
 
 {****************************************************************************
                                 Local types
@@ -2008,7 +2063,7 @@ begin
   if count <= 0 then exit;
   v := 0;
   { aligned? }
-  if (PtrUInt(@x) mod sizeof(PtrUInt))<>0 then
+  if ({%H-}PtrUInt(@x) mod sizeof(PtrUInt))<>0 then
     begin
       for i:=0 to count-1 do
         bytearray(x)[i]:=value;
@@ -2044,7 +2099,7 @@ var
 begin
   if Count <= 0 then exit;
   { aligned? }
-  if (PtrUInt(@x) mod sizeof(PtrUInt))<>0 then
+  if ({%H-}PtrUInt(@x) mod sizeof(PtrUInt))<>0 then
     begin
       for i:=0 to count-1 do
         wordarray(x)[i]:=value;
@@ -2387,7 +2442,7 @@ begin
    if (_self=nil) or (_vmt=nil) then
      exit;
    { vmt=-1 when memory was allocated }
-   if PtrUInt(_vmt)= PtrUInt(-1) then
+   if {%H-}PtrUInt(_vmt)= PtrUInt(-1) then
      begin
        if (_self=nil) or (ppointer(_self+vmt_pos)^=nil) then
          HandleError(210)
@@ -2475,7 +2530,7 @@ begin
   slen:=length(sstr);
   if slen>high(res) then
     slen:=high(res);
-  move(sstr[0],res[0],slen+1);
+  move(sstr[0],{%H-}res[0],slen+1);
   res[0]:=chr(slen);
 end;
 {$endif FPC_STRTOSHORTSTRINGPROC}
@@ -3239,7 +3294,6 @@ Begin
   Swap:=(X and $ffffffff) shl 32 + (X shr 32);
 End;
 
-
 {****************************************************************************
                     subroutines for string handling
 ****************************************************************************}
@@ -3335,8 +3389,8 @@ begin
   if (c in ['a'..'z']) then
     upcase:=char(byte(c)-32)
   else
-   upcase:=c;
-end;
+       upcase:=c;
+    end;
 
 
 function upcase(const s : shortstring) : shortstring;
@@ -3354,8 +3408,8 @@ begin
   if (c in ['A'..'Z']) then
    lowercase:=char(byte(c)+32)
   else
-   lowercase:=c;
-end;
+      lowercase:=c;
+   end;
 
 
 function lowercase(const s : shortstring) : shortstring; overload;
@@ -4125,7 +4179,7 @@ end;}
            end;
       end;
 {$endif FPC_SYSTEM_HAS_MUL_INT64}
-
+ {
     {$define FPC_SYSTEM_HAS_ROUND}
     function fpc_round_real(d : ValReal) : int64;assembler;compilerproc;
       var
@@ -4156,7 +4210,7 @@ end;}
         movq res,%rax
         fldcw oldcw
       end;
-
+    }
 
 
 { define EXTRAANSISHORT}
@@ -4177,6 +4231,15 @@ end;}
   Meaning that they can't be disposed of.
 }
 
+{$ifndef FPUNONE}
+{ Include processor specific routines }
+{$I math.inc}
+{ Include generic version }
+{$I genmath.inc}
+{$endif}
+
+{$i gencurr.inc}
+
 Type
   PAnsiRec = ^TAnsiRec;
   TAnsiRec = Record
@@ -4195,19 +4258,19 @@ Const
   AnsiRecLen = SizeOf(TAnsiRec);
   FirstOff   = SizeOf(TAnsiRec)-1;
 
-{****************************************************************************}
-{ Memory manager }
+  {****************************************************************************}
+  { Memory manager }
 
-const
-  MemoryManager: TMemoryManager = (
+  const
+    MemoryManager: TMemoryManager = (
     NeedLock: True;
-    GetMem: @SysGetMem;
-    FreeMem: @SysFreeMem;
-    FreeMemSize: @SysFreeMemSize;
-    AllocMem: @SysAllocMem;
-    ReAllocMem: @SysReAllocMem;
+      GetMem: @SysGetMem;
+      FreeMem: @SysFreeMem;
+      FreeMemSize: @SysFreeMemSize;
+      AllocMem: @SysAllocMem;
+      ReAllocMem: @SysReAllocMem;
     MemSize: @SysMemSize;
-  );
+    );
 
 {****************************************************************************
                     Internal functions, not in interface.
@@ -7732,6 +7795,197 @@ begin
   { install threadvar handler }
   fpc_threadvar_relocate_proc := RelocProc;
 end;
+{$if defined(FPC_HAS_FEATURE_RANDOM)}
+
+procedure randomize;
+var r:Longint;
+{$asmmode intel}
+begin
+  asm
+    mov rbx, 0
+    mov eax , dword[rbx]
+    mov r, eax
+  end;
+  randseed:=r;
+end;
+{----------------------------------------------------------------------
+   Mersenne Twister: A 623-Dimensionally Equidistributed Uniform
+   Pseudo-Random Number Generator.
+
+   What is Mersenne Twister?
+   Mersenne Twister(MT) is a pseudorandom number generator developped by
+   Makoto Matsumoto and Takuji Nishimura (alphabetical order) during
+   1996-1997. MT has the following merits:
+   It is designed with consideration on the flaws of various existing
+   generators.
+   Far longer period and far higher order of equidistribution than any
+   other implemented generators. (It is proved that the period is 2^19937-1,
+   and 623-dimensional equidistribution property is assured.)
+   Fast generation. (Although it depends on the system, it is reported that
+   MT is sometimes faster than the standard ANSI-C library in a system
+   with pipeline and cache memory.)
+   Efficient use of the memory. (The implemented C-code mt19937.c
+   consumes only 624 words of working area.)
+
+   home page
+     http://www.math.keio.ac.jp/~matumoto/emt.html
+   original c source
+     http://www.math.keio.ac.jp/~nisimura/random/int/mt19937int.c
+
+   Coded by Takuji Nishimura, considering the suggestions by
+   Topher Cooper and Marc Rieffel in July-Aug. 1997.
+
+   This library is free software; you can redistribute it and/or
+   modify it under the terms of the GNU Library General Public
+   License as published by the Free Software Foundation; either
+   version 2 of the License, or (at your option) any later
+   version.
+   This library is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+   See the GNU Library General Public License for more details.
+   You should have received a copy of the GNU Library General
+   Public License along with this library; if not, write to the
+   Free Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+   02111-1307  USA
+
+   Copyright (C) 1997, 1999 Makoto Matsumoto and Takuji Nishimura.
+   When you use this, send an email to: matumoto@math.keio.ac.jp
+   with an appropriate reference to your work.
+
+   REFERENCE
+   M. Matsumoto and T. Nishimura,
+   "Mersenne Twister: A 623-Dimensionally Equidistributed Uniform
+   Pseudo-Random Number Generator",
+   ACM Transactions on Modeling and Computer Simulation,
+   Vol. 8, No. 1, January 1998, pp 3--30.
+
+
+  Translated to OP and Delphi interface added by Roman Krejci (6.12.1999)
+
+  http://www.rksolution.cz/delphi/tips.htm
+
+  Revised 21.6.2000: Bug in the function RandInt_MT19937 fixed
+
+  2003/10/26: adapted to use the improved intialisation mentioned at
+  <http://www.math.keio.ac.jp/~matumoto/MT2002/emt19937ar.html> and
+  removed the assembler code
+
+ ----------------------------------------------------------------------}
+
+{$R-} {range checking off}
+{$Q-} {overflow checking off}
+
+{ Period parameter }
+Const
+  MT19937N=624;
+
+Type
+  tMT19937StateArray = array [0..MT19937N-1] of longint; // the array for the state vector
+
+{ Period parameters }
+const
+  MT19937M=397;
+  MT19937MATRIX_A  =$9908b0df;  // constant vector a
+  MT19937UPPER_MASK=longint($80000000);  // most significant w-r bits
+  MT19937LOWER_MASK=longint($7fffffff);  // least significant r bits
+
+{ Tempering parameters }
+  TEMPERING_MASK_B=longint($9d2c5680);
+  TEMPERING_MASK_C=longint($efc60000);
+
+
+VAR
+  mt : tMT19937StateArray;
+  mti: longint=MT19937N+1; // mti=MT19937N+1 means mt[] is not initialized
+  OldRandSeed:cardinal;
+
+{ Initializing the array with a seed }
+procedure sgenrand_MT19937(seed: longint);
+var
+  i: longint;
+begin
+  mt[0] := seed;
+  for i := 1 to MT19937N-1 do
+    begin
+      mt[i] := 1812433253 * (mt[i-1] xor (mt[i-1] shr 30)) + i;
+      { See Knuth TAOCP Vol2. 3rd Ed. P.106 for multiplier. }
+      { In the previous versions, MSBs of the seed affect   }
+      { only MSBs of the array mt[].                        }
+      { 2002/01/09 modified by Makoto Matsumoto             }
+    end;
+  mti := MT19937N;
+end;
+
+
+function genrand_MT19937: longint;
+const
+  mag01 : array [0..1] of longint =(0, longint(MT19937MATRIX_A));
+var
+  y: longint;
+  kk: longint;
+begin
+  if RandSeed<>OldRandSeed then
+    mti:=MT19937N+1;
+  if (mti >= MT19937N) { generate MT19937N longints at one time }
+  then begin
+     if mti = (MT19937N+1) then  // if sgenrand_MT19937() has not been called,
+       begin
+         sgenrand_MT19937(randseed);   // default initial seed is used
+         { hack: randseed is not used more than once in this algorithm. Most }
+         {  user changes are re-initialising reandseed with the value it had }
+         {  at the start -> with the "not", we will detect this change.      }
+         {  Detecting other changes is not useful, since the generated       }
+         {  numbers will be different anyway.                                }
+         randseed := not(randseed);
+         oldrandseed := randseed;
+       end;
+     for kk:=0 to MT19937N-MT19937M-1 do begin
+        y := (mt[kk] and MT19937UPPER_MASK) or (mt[kk+1] and MT19937LOWER_MASK);
+        mt[kk] := mt[kk+MT19937M] xor (y shr 1) xor mag01[y and $00000001];
+     end;
+     for kk:= MT19937N-MT19937M to MT19937N-2 do begin
+       y := (mt[kk] and MT19937UPPER_MASK) or (mt[kk+1] and MT19937LOWER_MASK);
+       mt[kk] := mt[kk+(MT19937M-MT19937N)] xor (y shr 1) xor mag01[y and $00000001];
+     end;
+     y := (mt[MT19937N-1] and MT19937UPPER_MASK) or (mt[0] and MT19937LOWER_MASK);
+     mt[MT19937N-1] := mt[MT19937M-1] xor (y shr 1) xor mag01[y and $00000001];
+     mti := 0;
+  end;
+  y := mt[mti]; inc(mti);
+  y := y xor (y shr 11);
+  y := y xor (y shl 7)  and TEMPERING_MASK_B;
+  y := y xor (y shl 15) and TEMPERING_MASK_C;
+  y := y xor (y shr 18);
+  Result := y;
+end;
+
+
+function random(l:longint): longint;
+begin
+  { otherwise we can return values = l (JM) }
+  if (l < 0) then
+    inc(l);
+  random := longint((int64(cardinal(genrand_MT19937))*l) shr 32);
+end;
+
+function random(l:int64): int64;
+begin
+  { always call random, so the random generator cycles (TP-compatible) (JM) }
+  random := int64((qword(cardinal(genrand_MT19937)) or ((qword(cardinal(genrand_MT19937)) shl 32))) and $7fffffffffffffff);
+  if (l<>0) then
+    random := random mod l
+  else
+    random := 0;
+end;
+
+{$ifndef FPUNONE}
+function random: extended;
+begin
+  random := cardinal(genrand_MT19937) * (extended(1.0)/(int64(1) shl 32));
+end;
+{$endif}
+{$endif FPC_HAS_FEATURE_RANDOM}
 
 {*****************************************************************************
                             Resources support

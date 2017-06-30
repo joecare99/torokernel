@@ -41,7 +41,20 @@ interface
 uses Arch, Process;
 
 type
+  Tpoint = record x,y:integer end;
+  TCoord = Tpoint;
+  TSmallRect = record
+      case byte of
+      0:(OL,UR:Tpoint);
+      1:(Top,left,Right,Bottom:integer);
+  end;
 
+  TConsolePixel = record
+        car: XChar;
+        form: byte;
+    end;
+
+    TChar_Info = TConsolePixel;
     { TConsole }
 
     TConsole = record // screen text mode
@@ -56,6 +69,7 @@ type
         procedure WriteLn(s: ansistring);
         procedure Write(s: ansistring);
     end;
+
 
 // Clears the Screen of the Current Console;
 procedure CleanConsole;
@@ -89,12 +103,21 @@ procedure PutC(const Car: XChar);
 
 procedure NewLine(ClEOL: boolean = False);
 
+procedure WriteConsoleOutput(aHandle: THandle; PBuf: Pointer;const coordbufSize, // col-row size of chiBuffer
+        coordBufCoord:TCoord; // top left dest. cell in chiBuffer
+        const srctReadRect:TSmallRect);
+
+Procedure TextMode(mode:word);
+
+function OutHandle:THandle;
+
 var
     // default Color = ???
     Color: byte = 10;
 
 const
     HEX_CHAR: array[0..15] of XChar = ('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F');
+
 
 implementation
 
@@ -114,11 +137,6 @@ var
     LockConsole: UInt64 = 3;
 
 
-type
-    TConsolePixel = record
-        car: XChar;
-        form: byte;
-    end;
 
 var
     PConsole: ^TConsolePixel;
@@ -127,6 +145,12 @@ var
     BufferCount: longint = 1;
     ThreadInKey: PThread = nil;
     LastChar: longint = 1;
+
+
+    function OutHandle:THandle;
+begin
+    result := VIDEO_OFFSET;
+end;
 
 // position the cursor in screen
 procedure SetCursor(X, Y: byte);
@@ -164,7 +188,33 @@ begin
       end;
 end;
 
-// Put caracter to screen
+procedure WriteConsoleOutput(aHandle: THandle; PBuf: Pointer;const coordbufSize, // col-row size of chiBuffer
+        coordBufCoord:TCoord; // top left dest. cell in chiBuffer
+        const srctReadRect:TSmallRect);
+begin
+    PConsole := Pointer(VIDEO_OFFSET);
+    move(Pbuf^,PConsole^,coordbufSize.x*coordbufSize.y*sizeof(TChar_Info));
+end;
+
+procedure TextMode(mode:word);
+//AH=11h
+//AL=12h
+//BL=Zeichentabelle
+begin
+     DisableInt;
+    SpinLock(3, 4, LockConsole);
+asm
+  mov ax, 3
+//  int $10     {set Text mode}
+//  mov ax, $1112
+//  mov bl, 0
+//  int $10     {load 8x8 font to page 0 block}
+end;
+  LockConsole := 3;
+    RestoreInt;
+end;
+
+// Put character to screen
 procedure PutC(const Car: XChar);
 begin
     if  (Y > 24) then
@@ -246,22 +296,34 @@ procedure PrintStringLn(const S: ansistring);
 var
   I: Integer;
 begin
+    DisableInt;
+    SpinLock(3, 4, LockConsole);
     for I := 1 to Length(S) do
         PutC(S[I]);
     NewLine(false);
+    LockConsole := 3;
+    RestoreInt;
 end;
 
 procedure PrintString(const S: ansistring);
 var
     I: integer;
 begin
+    DisableInt;
+    SpinLock(3, 4, LockConsole);
     for I := 1 to Length(S) do
         PutC(S[I]);
+    LockConsole := 3;
+    RestoreInt;
 end;
 
 procedure GotoXY(x, y: smallint);
 begin
+    DisableInt;
+    SpinLock(3, 4, LockConsole);
  SetCursor(x-1,Y-1);
+ LockConsole := 3;
+ RestoreInt;
 end;
 
 // Clean the screen

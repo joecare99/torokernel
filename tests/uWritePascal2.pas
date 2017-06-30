@@ -50,6 +50,7 @@ var
     X, Y, C: integer;
 
 begin
+    color := 14;
     for Y in TRange do
       begin
         PrintString(StringOfChar(Chars[T], (E + F) - Y));
