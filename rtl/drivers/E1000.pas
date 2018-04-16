@@ -42,6 +42,11 @@ uses
 
 implementation
 
+{$MACRO ON}
+{$DEFINE EnableInt := asm sti;end;}
+{$DEFINE DisableInt := asm pushf;cli;end;}
+{$DEFINE RestoreInt := asm popf;end;}
+
 type
   PE1000 = ^TE1000;
   PE1000RxDesc = ^TE1000RxDesc;
@@ -312,7 +317,7 @@ begin
     {$IFDEF DebugE1000}
      if (Net.OutgoingPacketTail <> nil) then
      begin
-       WriteDebug('e1000: OutgoingPacket=nil but OutgoingPacketTail <> nil\n', []);
+       WriteDebug('e1000: Net.OutgoingPackets=nil but Net.OutgoingPacketTail <> nil\n\n', []);
      end;
     {$ENDIF}
     Net.OutgoingPacketTail := Packet;
@@ -328,10 +333,15 @@ begin
   end;
 end;
 
+Type
+  TarrayofLongInt = ^arrayofLongInt;
+  arrayofLongInt = array[0..1] of LongInt;
+
 // Initializes RX and TX buffers
 function e1000initbuf(Net: PE1000): Boolean;
 var
   I: LongInt;
+  tmp: TarrayofLongInt;
   RxBuff: PE1000RxDesc;
   TxBuff: PE1000TxDesc;
   r: ^char;
@@ -441,8 +451,9 @@ begin
     end;
 
   // Setup the receive ring registers.
-  e1000WriteRegister(Net, E1000_REG_RDBAL, PtrUInt(Net.RxDesc) and $FFFFFFFF);
-  e1000WriteRegister(Net, E1000_REG_RDBAH, PtrUInt(Net.RxDesc) shr 32);
+  tmp := @Net.RxDesc;
+  e1000WriteRegister(Net, E1000_REG_RDBAL, tmp[0]);
+  e1000WriteRegister(Net, E1000_REG_RDBAH, tmp[1]);
   e1000WriteRegister(Net, E1000_REG_RDLEN, Net.RxDescCount *SizeOf(TE1000RxDesc));
   e1000WriteRegister(Net, E1000_REG_RDH,   0);
   e1000WriteRegister(Net, E1000_REG_RDT, Net.RxDescCount -1);
@@ -460,8 +471,9 @@ begin
   e1000SetRegister(Net, E1000_REG_RCTL, E1000_REG_RCTL_EN {or E1000_REG_RCTL_UPE} or E1000_REG_RCTL_BAM or E1000_RCTL_SECRC );
 
   // Setup the transmit ring registers.
-  E1000WriteRegister(Net, E1000_REG_TDBAL, PtrUInt(Net.TxDesc) and $FFFFFFFF );
-  E1000WriteRegister(Net, E1000_REG_TDBAH, PtrUInt(Net.TxDesc) shr 32);
+  tmp := @Net.TxDesc;
+  E1000WriteRegister(Net, E1000_REG_TDBAL, tmp[0]);
+  E1000WriteRegister(Net, E1000_REG_TDBAH, tmp[1]);
   E1000WriteRegister(Net, E1000_REG_TDLEN, Net.TxDescCount * SizeOf(TE1000TxDesc));
   E1000WriteRegister(Net, E1000_REG_TDH,   0);
   E1000WriteRegister(Net, E1000_REG_TDT, 0);
@@ -481,8 +493,9 @@ var
   Packet: PPacket;
   Data, P: PByteArray;
   // this flag is used to drop packets in some situation
-  dropflag: Boolean = false;
+  DropFlag: Boolean;
 begin
+  DropFlag:= false;
   // Find the head, tail and current descriptors
   {$IFDEF DebugE1000} Head := E1000ReadRegister(Net, E1000_REG_RDH); {$ENDIF}
   Tail := E1000ReadRegister(Net, E1000_REG_RDT);
@@ -499,17 +512,17 @@ begin
   if (RxDesc.Status and E1000_RX_STATUS_DONE) = 0 then
   begin
      {$IFDEF DebugE1000} WriteDebug('e1000: new packet, E1000_RX_STATUS_DONE exiting\n', []); {$ENDIF}
-     dropflag := true;
+     DropFlag := True;
   end;
 
   // this driver does not hable such a kind of packets
   if (RxDesc.Status and  E1000_RX_STATUS_EOP) = 0 then
   begin
     {$IFDEF DebugE1000} WriteDebug('e1000: new packet, E1000_RX_STATUS_EOP exiting\n', []); {$ENDIF}
-    dropflag := true;
+    DropFlag := True;
   end;
 
-  if dropflag then
+  if DropFlag then
   begin
     // reset the descriptor
     RxDesc.Status := E1000_RX_STATUS_DONE;
@@ -534,8 +547,8 @@ begin
   // set up the packet for higher layer
   Packet.data:= Pointer(PtrUInt(Packet) + SizeOf(TPacket));
   Packet.size:= RxDesc.Length;
-  Packet.Delete:= false;
-  Packet.Ready:= false;
+  Packet.Delete:= False;
+  Packet.Ready:= False;
   Packet.Next:= nil;
 
   // copy to the buffer
@@ -634,8 +647,12 @@ asm
  push rsi
  push r8
  push r9
+ push r10
+ push r11
+ push r12
  push r13
  push r14
+ push r15
  // protect the stack
  mov r15 , rsp
  mov rbp , r15
@@ -646,8 +663,12 @@ asm
  Call e1000handler
  mov rsp , rbp
  // restore the registers
+ pop r15
  pop r14
  pop r13
+ pop r12
+ pop r11
+ pop r10
  pop r9
  pop r8
  pop rsi
@@ -738,19 +759,19 @@ begin
         for I := 0 to 127 do
           e1000WriteRegister(@NicE1000, E1000_REG_MTA + (I * 4), 0);
 
-        WriteConsole('e1000: /Vdetected/n, Irq:%d\n',[PciCard.irq]);
-        WriteConsole('e1000: mac /V%d:%d:%d:%d:%d:%d/n\n', [NicE1000.Driverinterface.HardAddress[0], NicE1000.Driverinterface.HardAddress[1],NicE1000.Driverinterface.HardAddress[2], NicE1000.Driverinterface.HardAddress[3], NicE1000.Driverinterface.HardAddress[4], NicE1000.Driverinterface.HardAddress[5]]);
+        WriteConsoleF('e1000: /Vdetected/n, Irq:%d\n',[PciCard.irq]);
+        WriteConsoleF('e1000: mac /V%d:%d:%d:%d:%d:%d/n\n', [NicE1000.Driverinterface.HardAddress[0], NicE1000.Driverinterface.HardAddress[1],NicE1000.Driverinterface.HardAddress[2], NicE1000.Driverinterface.HardAddress[3], NicE1000.Driverinterface.HardAddress[4], NicE1000.Driverinterface.HardAddress[5]]);
         {$IFDEF DebugE1000} WriteDebug('e1000: mac %d:%d:%d:%d:%d:%d\n', [NicE1000.Driverinterface.HardAddress[0], NicE1000.Driverinterface.HardAddress[1],NicE1000.Driverinterface.HardAddress[2], NicE1000.Driverinterface.HardAddress[3], NicE1000.Driverinterface.HardAddress[4], NicE1000.Driverinterface.HardAddress[5]]); {$ENDIF}
 
         // buffer initialization
         if e1000initbuf(@NicE1000) then
         begin
-             WriteConsole('e1000: buffer init ... /VOk/n\n',[]);
+             WriteConsoleF('e1000: buffer init ... /VOk/n\n',[]);
              {$IFDEF DebugE1000} WriteDebug('e1000: initbuffer() sucesses\n', []); {$ENDIF}
         end
         else
         begin
-             WriteConsole('e1000: buffer init ... /RFault/n\n',[]);
+             WriteConsoleF('e1000: buffer init ... /RFault/n\n',[]);
              {$IFDEF DebugE1000} WriteDebug('e1000: initbuffer() fails, exiting\n', []); {$ENDIF}
              continue;
         end;
@@ -765,12 +786,12 @@ begin
         i := e1000ReadRegister(@NicE1000, E1000_REG_STATUS);
         if (i and 3 <> 0) then
         begin
-           WriteConsole('e1000: link is /VUp/n, speed: %d\n', [(i and (3 shl 6)) shr 6]);
+           WriteConsoleF('e1000: link is /VUp/n, speed: %d\n', [(i and (3 shl 6)) shr 6]);
            {$IFDEF DebugE1000} WriteDebug('e1000: Link Up, speed: %d\n', [(i and (3 shl 6)) shr 6]); {$ENDIF}
         end
         else
         begin
-           WriteConsole('e1000: link is /RDown/n, speed: %d\n', [(i and (3 shl 6)) shr 6]);
+           WriteConsoleF('e1000: link is /RDown/n, speed: %d\n', [(i and (3 shl 6)) shr 6]);
            {$IFDEF DebugE1000} WriteDebug('e1000: Link Down, speed: %d\n', [(i and (3 shl 6)) shr 6]); {$ENDIF}
         end;
 

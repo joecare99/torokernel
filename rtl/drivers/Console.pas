@@ -5,10 +5,10 @@
 // 
 // Changes:
 // 
-// 18/12/2016 Adding protection to WriteConsole()
-// 04/09/2016 Removing Printk_(), only WriteConsole() is used which is protected. 
-// 11/12/2011 Implementing "Lock" for concurrent access to the console in WriteConsole() procedure. Printk_ is still free of protection.
-// 27/03/2009 Adding support for QWORD parameters in Printk_() and WriteConsole().
+// 18/12/2016 Adding protection to WriteConsoleF()
+// 04/09/2016 Removing Printk_(), only WriteConsoleF() is used which is protected. 
+// 11/12/2011 Implementing "Lock" for concurrent access to the console in WriteConsoleF() procedure. Printk_ is still free of protection.
+// 27/03/2009 Adding support for QWORD parameters in Printk_() and WriteConsoleF().
 // 08/02/2007 Rename to Console.pas  , new procedures to read and write the console by Matias Vara.
 //            The consoles's procedures are only for users, the kernel only need PrintK_().
 // 15/07/2006 The code was rewrited  by Matias Vara.
@@ -42,8 +42,8 @@ uses Arch, Process;
 
 procedure CleanConsole;
 procedure PrintDecimal(Value: PtrUInt);
-procedure WriteConsole(const Format: AnsiString; const Args: array of PtrUInt);
-procedure ReadConsole(var C: XChar);
+procedure WriteConsoleF(const Format: AnsiString; const Args: array of PtrUInt);
+procedure ReadConsole(out C: XChar);
 procedure ReadlnConsole(Format: PXChar);
 procedure DisabledConsole;
 procedure EnabledConsole;
@@ -56,6 +56,12 @@ const
   HEX_CHAR: array[0..15] of XChar = ('0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F');
 
 implementation
+
+{$MACRO ON}
+{$DEFINE EnableInt := asm sti;end;}
+{$DEFINE DisableInt := asm pushf;cli;end;}
+{$DEFINE RestoreInt := asm popf;end;}
+
 
 const
     CHAR_CODE : array [1..57] of XChar =
@@ -164,11 +170,23 @@ end;
 procedure PrintHexa(Value: PtrUInt);
 var
   I: Byte;
+  P: Boolean;
 begin
+  P := False;
   PutC('0');
   PutC('x');
+  if (Value = 0) then
+  begin
+    Putc('0');
+    Exit;
+  end;
   for I := SizeOf(PtrUInt)*2-1 downto 0 do
-    PutC(HEX_CHAR[(Value shr (I*4)) and $0F]);
+  begin
+   if not(P) and (HEX_CHAR[(Value shr (I*4)) and $0F] <> '0') then
+     P:= True;
+   if P then
+     PutC(HEX_CHAR[(Value shr (I*4)) and $0F]);
+  end;
 end;
 
 procedure PrintString(const S: AnsiString);
@@ -188,7 +206,7 @@ begin
 end;
 
 // Print to screen using format
-procedure WriteConsole(const Format: AnsiString; const Args: array of PtrUInt);
+procedure WriteConsoleF(const Format: AnsiString; const Args: array of PtrUInt);
 var
   ArgNo: LongInt;
   I, J: LongInt;
@@ -406,8 +424,12 @@ asm
   push rsi
   push r8
   push r9
+  push r10
+  push r11
+  push r12
   push r13
   push r14
+  push r15
   // protect the stack
   mov r15 , rsp
   mov rbp , r15
@@ -419,8 +441,12 @@ asm
   Call KeyHandler
   mov rsp , rbp
   // restore the registers
+  pop r15
   pop r14
   pop r13
+  pop r12
+  pop r11
+  pop r10
   pop r9
   pop r8
   pop rsi
@@ -435,7 +461,7 @@ asm
 end;
 
 // Read a Char from Console
-procedure ReadConsole(var C: XChar);
+procedure ReadConsole(out C: XChar);
 begin
   ThreadInkey := GetCurrentThread;
   if BufferCount = LastChar then

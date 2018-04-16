@@ -7,7 +7,7 @@
 // Changes:
 //
 // 06/03/2011: Fixed bug at the initialization.
-// 27/12/2009: Bug Fixed in Initilization process.
+// 27/12/2009: Bug Fixed in Initialization process.
 // 24/12/2008: Bug in Read procedure. In One irq I must read all the packets in the internal buffer
 //             of ne2000. It is a circular buffer.Some problems if Buffer Overflow happens .
 // 24/12/2007: Bug in size of Packets was solved.
@@ -46,6 +46,11 @@ uses
 implementation
 
 {$IFDEF DebugNe2000} uses Debug; {$ENDIF}
+
+{$MACRO ON}
+{$DEFINE EnableInt := asm sti;end;}
+{$DEFINE DisableInt := asm pushf;cli;end;}
+{$DEFINE RestoreInt := asm popf;end;}
 
 type
   PNe2000 = ^TNe2000;
@@ -113,7 +118,7 @@ begin
    // initialize network driver
    CPU := GetApicid; 
    IrqOn(NicNE2000.IRQ);
-   WriteConsole('ne2000: /Vstarted/n on Core #%d\n',[CPU]);
+   WriteConsoleF('ne2000: /Vstarted/n on Core #%d\n',[CPU]);
 end;
 
 procedure WritePort(Data: Byte; Port: Word);
@@ -290,13 +295,13 @@ begin
 	  // todo: null memory scenario 
 	  // if Packet = nil then 
 	  // begin
-	  // WriteConsole ('fullll\n',[]);
+	  // WriteConsoleF ('fullll\n',[]);
 	  // end;
       Packet.Data := Pointer(PtrUInt(Packet) + SizeOf(TPacket));
       Packet.Size := Len;
       Packet.Next := nil;
-      Packet.Ready := false;
-      Packet.Delete := false;
+      Packet.Ready := False;
+      Packet.Delete := False;
       Data := Packet.Data;
       WritePort(Len, Net.iobase+REMOTEBYTECOUNT0);
       WritePort(Len shr 8, Net.iobase+REMOTEBYTECOUNT1);
@@ -379,8 +384,12 @@ asm
   push rsi
   push r8
   push r9
+  push r10
+  push r11
+  push r12
   push r13
   push r14
+  push r15
   // protect the stack
   mov r15 , rsp
   mov rbp , r15
@@ -391,8 +400,12 @@ asm
   Call ne2000handler
   mov rsp , rbp
   // restore the registers
+  pop r15
   pop r14
   pop r13
+  pop r12
+  pop r11
+  pop r10
   pop r9
   pop r8
   pop rsi
@@ -434,11 +447,11 @@ begin
         Net.stop := @ne2000Stop;
         Net.Reset := @ne2000Reset;
         Net.TimeStamp := 0;
-        WriteConsole('ne2000: /Vdetected/n, Irq:%d\n',[PciCard.irq]);
+        WriteConsoleF('ne2000: /Vdetected/n, Irq:%d\n',[PciCard.irq]);
         InitNe2000(@NicNE2000);
         CaptureInt(32+NicNE2000.IRQ, @ne2000irqhandler);
         RegisterNetworkInterface(Net);
-        WriteConsole('ne2000: mac /V%d:%d:%d:%d:%d:%d/n\n', [Net.Hardaddress[0], Net.Hardaddress[1],
+        WriteConsoleF('ne2000: mac /V%d:%d:%d:%d:%d:%d/n\n', [Net.Hardaddress[0], Net.Hardaddress[1],
         Net.Hardaddress[2], Net.Hardaddress[3], Net.Hardaddress[4], Net.Hardaddress[5]]);
         {$IFDEF DebugNe2000} WriteDebug('ne2000: detection finished, exiting\n', []); {$ENDIF}
         Exit; // Support only 1 NIC in this version

@@ -7,7 +7,7 @@
 // Changes :
 //
 // 18/01/2017 Adding DisableInt() and RestoreInt().
-// 11/12/2011 Fixed a bug at boot core initilization.
+// 11/12/2011 Fixed a bug at boot core initialization.
 // 08/08/2011 Fixed bugs caused for a wrong convention calling understanding.
 // 27/10/2009 Cache Managing Implementation.
 // 10/05/2009 SMP Initialization moved to Arch.pas. Supports Multicore.
@@ -19,7 +19,6 @@
 //
 // Copyright (c) 2003-2016 Matias Vara <matiasevara@gmail.com>
 // All Rights Reserved
-//
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -113,23 +112,26 @@ procedure bit_set(Value: Pointer; Offset: QWord); assembler;
 function bit_test ( Val : Pointer ; pos : QWord ) : Boolean;
 procedure change_sp (new_esp : Pointer ) ;
 // only used in the debug unit to synchronize access to serial port
-procedure Delay(milisec: LongInt);
+procedure Delay(ms: LongInt);
 procedure eoi;
 function GetApicID: Byte;
+function GetApicBaseAddr: pointer;
 function get_irq_master: Byte;
 function get_irq_slave: Byte;
-procedure hlt;
 procedure IrqOn(irq: Byte);
 procedure IrqOff(irq: Byte);
 function is_apic_ready: Boolean ;
 procedure NOP;
 function read_portb(port: Word): Byte;
+procedure read_portd(Data: Pointer; Port: Word);
 function read_rdtsc: Int64;
 procedure send_apic_init (apicid : Byte) ;
 procedure send_apic_startup (apicid , vector : Byte );
 function SpinLock(CmpVal, NewVal: UInt64; var addval: UInt64): UInt64; assembler;
 procedure SwitchStack(sv: Pointer; ld: Pointer);
 procedure write_portb(Data: Byte; Port: Word);
+procedure write_portd(const Data: Pointer; const Port: Word);
+procedure write_portw(Data: Word; Port: Word);
 procedure CaptureInt (int: Byte; Handler: Pointer);
 procedure CaptureException(Exception: Byte; Handler: Pointer);
 procedure ArchInit;
@@ -138,7 +140,7 @@ procedure Interruption_Ignore;
 procedure IRQ_Ignore;
 function PciReadDWORD(const bus, device, func, regnum: UInt32): UInt32;
 function GetMemoryRegion (ID: LongInt ; Buffer : PMemoryRegion): LongInt;
-procedure InitCore(ApicID: Byte);
+function InitCore(ApicID: Byte): Boolean;
 procedure SetPageCache(Add: Pointer);
 procedure RemovePageCache(Add: Pointer);
 function SecondsBetween(const ANow: TNow;const AThen: TNow): LongInt;
@@ -147,6 +149,15 @@ procedure DelayMicro(microseg: LongInt);
 procedure PciWriteWord (const bus, device, func, regnum, value: Word);
 function read_portw(port: Word): Word;
 function PciReadWORD(const bus, device, func, regnum: UInt32): Word;
+procedure SetPageReadOnly(Add: Pointer);
+procedure send_apic_int (apicid, vector: Byte);
+procedure eoi_apic;
+procedure monitor(addr: pointer; ext: DWORD; hint: DWORD);
+procedure mwait(ext: DWORD; hint: DWORD);
+procedure hlt; assembler;
+procedure ReadBarrier;assembler;{$ifdef SYSTEMINLINE}inline;{$endif}
+procedure ReadWriteBarrier;assembler;{$ifdef SYSTEMINLINE}inline;{$endif}
+procedure WriteBarrier;assembler;{$ifdef SYSTEMINLINE}inline;{$endif}
 
 const
   MP_START_ADD = $e0000; // we will start the search of mp_floating_point begin this address
@@ -160,19 +171,27 @@ const
   HasCacheHandler: Boolean = True;
   HasException: Boolean = True;
   HasFloatingPointUnit : Boolean = True;
+  INTER_CORE_IRQ = 80;
 
 var
   CPU_COUNT: LongInt; // Number of CPUs detected while smp_init
-  AvailableMemory: QWord; // Memory in the system
+  AvailableMemory: QWord; // Free Memory after the first MB
   // LocalCpuSpeed has the speed of the local CPU in Mhz
   // It is used to calculate the delays
   LocalCpuSpeed: Int64 = 0;
   StartTime: TNow;
   Cores: array[0..MAX_CPU-1] of TCore;
-    
+  LargestMonitorLine: longint;
+  SmallestMonitorLine: longint;
+
 implementation
 
 uses Kernel, Console;
+
+{$MACRO ON}
+{$DEFINE EnableInt := asm sti;end;}
+{$DEFINE DisableInt := asm pushf;cli;end;}
+{$DEFINE RestoreInt := asm popf;end;}
 
 const
   Apic_Base = $FEE00000; // $FFFFFFFF - $11FFFFF // = 18874368 -> 18MB from the top end
@@ -185,7 +204,8 @@ const
   timer_curr_reg = apic_base + $390;
   divide_reg = apic_base + $3e0;
   eoi_reg = apic_base + $b0;
-  
+  svr_reg = apic_base + $f0;
+
   // IDT descriptors
   gate_syst = $8E;
   
@@ -277,7 +297,7 @@ var
 // Put interruption gate in the idt
 procedure CaptureInt(int: Byte; Handler: Pointer);
 begin
-  idt_gates^[int].handler_0_15 := Word(PtrUInt(Handler) and $ffff);
+  Move(PtrUInt(Handler), idt_gates^[int].handler_0_15, sizeof(WORD));
   idt_gates^[int].selector := kernel_code_sel;
   idt_gates^[int].tipe := gate_syst;
   idt_gates^[int].handler_16_31 := Word((PtrUInt(Handler) shr 16) and $ffff);
@@ -288,7 +308,7 @@ end;
 
 procedure CaptureException(Exception: Byte; Handler: Pointer);
 begin
-  idt_gates^[Exception].handler_0_15 := Word(PtrUInt(Handler) and $ffff) ;
+  Move(PtrUInt(Handler), idt_gates^[Exception].handler_0_15, sizeof(WORD));
   idt_gates^[Exception].selector := kernel_code_sel;
   idt_gates^[Exception].tipe := gate_syst ;
   idt_gates^[Exception].handler_16_31 := Word((PtrUInt(Handler) shr 16) and $ffff);
@@ -327,20 +347,20 @@ end;
 
 procedure write_portd(const Data: Pointer; const Port: Word); {$IFDEF ASMINLINE} inline; {$ENDIF}
 asm // RCX: data, RDX: port
-  {$IFDEF DCC} push rsi {$ENDIF} // it is obvious that rsi should also be saved for FPC
+        push rsi
   {$IFDEF LINUX} mov dx, port {$ENDIF}
 	mov rsi, data // DX=port
         outsd
-  {$IFDEF DCC} pop rsi {$ENDIF}
+        pop rsi
 end;
 
 procedure read_portd(Data: Pointer; Port: Word); {$IFDEF ASMINLINE} inline; {$ENDIF}
 asm // RCX: data, RDX: port
-  {$IFDEF DCC} push rdi {$ENDIF} // it is obvious that rdi should also be saved for FPC
+        push rdi
         {$IFDEF LINUX} mov dx, port {$ENDIF}
 	mov rdi, data // DX=port
 	insd
-  {$IFDEF DCC} pop rdi {$ENDIF}
+        pop rdi
 end;
 
 // Send init interrupt to apicid
@@ -352,8 +372,12 @@ begin
 	icrl := Pointer(icrlo_reg);
 	icrh := Pointer(icrhi_reg) ;
 	icrh^ := apicid shl 24 ;
-	// mode: init   , destination no shorthand
-	icrl^ := $500;
+	// INIT or LEVEL or ASSERT
+	icrl^ := $500 or $8000 or $4000;
+        DelayMicro(200);
+        // INIT or LEVEL
+        icrl^ := $500 or $8000;
+        DelayMicro(200);
 end;
 
 // Send the startup IPI for initialize for processor 
@@ -361,7 +385,6 @@ procedure send_apic_startup(apicid, vector: Byte);
 var
   icrl, icrh: ^DWORD;
 begin
-  Delay(10);
   icrl := Pointer(icrlo_reg);
   icrh := Pointer(icrhi_reg) ;
   icrh^ := apicid shl 24 ;
@@ -369,17 +392,45 @@ begin
   icrl^ := $600 or vector;
 end;
 
+// send an IPI(vector) to the core identified by apicid
+procedure send_apic_int (apicid, vector: Byte);
+var
+  icrl, icrh: ^DWORD;
+begin
+  Delay(10);
+  icrl := Pointer(icrlo_reg);
+  icrh := Pointer(icrhi_reg) ;
+  icrh^ := apicid shl 24 ;
+  icrl^ := vector;
+end;
+
+// enable the local apic
+procedure enable_local_apic;
+var
+  svr: ^DWORD;
+begin
+  svr := Pointer(svr_reg);
+  svr^ := svr^ or $100;
+  Delay(10);
+end;
+
+procedure eoi_apic;
+var
+  tmp: ^DWORD;
+begin
+  tmp := Pointer(eoi_reg);
+  tmp^ := 0;
+  Delay(10);
+end;
+
 // It implements atomic compare and change
 function SpinLock(CmpVal, NewVal: UInt64; var addval: UInt64): UInt64; assembler;
 asm
 @spin:
-  nop
-  nop
-  nop
-  nop
   mov rax, cmpval
   {$IFDEF LINUX} lock cmpxchg [rdx], rsi {$ENDIF}
   {$IFDEF WINDOWS} lock cmpxchg [r8], rdx {$ENDIF}
+  pause
   jnz @spin
 end;
 
@@ -388,6 +439,23 @@ function GetApicID: Byte; inline;
 begin
   Result := PDWORD(apicid_reg)^ shr 24;
 end;
+
+// Get the apic base address
+function GetApicBaseAddr: pointer;
+var
+  basehigh, baselow: DWORD;
+begin
+  asm
+   mov ecx, 1bh
+   xor eax, eax
+   xor edx, edx
+   rdmsr
+   mov baselow, eax
+   mov basehigh, edx
+  end ['ECX', 'EAX', 'EDX'];
+  Result:= pointer(PtrUInt((baselow and $fffff000) or ((basehigh and $f) shr 32)));
+end;
+
 
 // Read the IPI delivery status
 // Check Delivery Status register
@@ -409,16 +477,16 @@ asm
   nop;
 end;
 
-// Wait a number of miliseconds
+// Wait a number of ms
 // It uses the Local Apic
-procedure Delay(milisec: LongInt);
+procedure Delay(ms: LongInt);
 var
   tmp : ^DWORD ;
 begin
   tmp := Pointer (divide_reg);
   tmp^ := $b;
   tmp := Pointer(timer_init_reg); // set the count
-  tmp^ := (LocalCpuSpeed * 1000)*milisec; // the count is aprox.
+  tmp^ := (LocalCpuSpeed * 1000)*ms; // the count is aprox.
   tmp := Pointer (timer_curr_reg); // wait for the counter
   while tmp^ <> 0 do
   begin
@@ -456,7 +524,7 @@ procedure RelocateAPIC;
 asm
   mov ecx, 27
   mov edx, 0
-  mov eax, Apic_Base
+//  mov eax, Apic_Base
   wrmsr
 end;
 
@@ -589,7 +657,7 @@ begin
   mov eax, 1
   cpuid
   mov features, edx
-  end;
+  end ['EAX', 'EDX'];
 
   // we verify if there is timecounter
   // if not we cannot calculate the speed so we exit
@@ -693,7 +761,7 @@ asm
   pop   ax
 @CPUS_SKP:
   mov speed, ax
-  end;
+  end ['EAX', 'EDX', 'EBX', 'ECX'];
   
   if speed = 0 then
   begin
@@ -701,12 +769,6 @@ asm
   end;
 
   result := speed;
-end;
-
-// Stop the execution of CPU
-procedure hlt; assembler; {$IFDEF ASMINLINE} inline; {$ENDIF}
-asm
-  hlt
 end;
 
 // Turn off Qemu VM
@@ -717,17 +779,18 @@ begin
 end;
 
 // Get the rdtsc counter
-// Beware of specific code due to qemu x64 which is not handling rdtsc instruction properly
 function read_rdtsc: Int64;
 var
-  lw, hg: DWORD;
-asm
+  l, h: QWORD;
+begin
+  asm
+  xor rax, rax
+  xor rdx, rdx
   rdtsc
-  mov lw, eax
-  mov hg, edx
-  mov eax, hg
-  shl rax, 32
-  add eax, lw
+  mov l, rax
+  mov h, rdx
+  end ['RAX', 'RDX'];
+  result := QWORD(h shl 32) or l;
 end;
 
 // Next procedures aren't atomic
@@ -736,11 +799,11 @@ function bit_test(Val: Pointer; pos: QWord): Boolean;
 asm
   {$IFDEF WINDOWS} bt  [rcx], rdx {$ENDIF}
   {$IFDEF LINUX} bt [rdi], rsi {$ENDIF}
-  jc  @true
-  @false:
+  jc  @True
+  @False:
    mov rax , 0
    jmp @salir
-  @true:
+  @True:
     mov rax , 1
   @salir:
 end;
@@ -889,10 +952,6 @@ begin
 end;
 
 {$IFDEF FPC}
-procedure nolose; [public, alias: 'FPC_ABSMASK_DOUBLE'];
-begin
-end;
-
 procedure nolose2; [public, alias: 'FPC_EMPTYINTF'];
 begin
 end;
@@ -906,8 +965,6 @@ procedure nolose4;  [public, alias: 'FPC_DONEEXCEPTION'];
 begin
 
 end;
-
-
 {$ENDIF}
 
 // Procedures to capture unhandle interruptions
@@ -922,6 +979,13 @@ asm
   call EOI;
   db $48, $cf
 end;
+
+procedure Apic_IRQ_Ignore; {$IFDEF FPC} [nostackframe]; assembler ; {$ENDIF}
+asm
+  call eoi_apic
+  db $48, $cf
+end;
+
 
 // PCI bus access
 const
@@ -997,7 +1061,7 @@ end;
 //------------------------------------------------------------------------------
 
 var
-  esp_tmp: Pointer; // Pointer to Stack for each CPU during SMP Initilization
+  esp_tmp: Pointer; // Pointer to Stack for each CPU during SMP Initialization
   start_stack: array[0..MAX_CPU-1] of array[1..size_start_stack] of Byte; // temporary stack for each CPU
 
 {$IFDEF FPC}
@@ -1007,9 +1071,9 @@ procedure boot_confirmation;
 var
   CpuID: Byte;
 begin
+  enable_local_apic;
   CpuID := GetApicID;
   Cores[CPUID].InitConfirmation := True;
-  // Local Kernel Initialization
   Cores[CPUID].InitProc;
 end;
 
@@ -1056,32 +1120,29 @@ end;
 
 // Boot CPU using IPI messages.
 // Warning this procedure must be do it just one time per CPU
-procedure InitCore(ApicID: Byte);
-var
-  Attempt: LongInt;
+function InitCore(ApicID: Byte): Boolean;
 begin
-  // tray two times two wake up each core
-  Attempt := 2;
-  while Attempt > 0 do
-  begin
-    // wakeup the remote core with IPI-INIT
-    send_apic_init(apicid);
-    Delay(10);
-    // send the first startup
-    send_apic_startup(ApicID, 2);
-    Delay(10);
-    // remote CPU read the IPI?
+  Result := True;
+  // wakeup the remote core with IPI-INIT
+  // send_apic_init already added some delay
+  send_apic_init(apicid);
+  Delay(10);
+  // send the first startup
+  send_apic_startup(ApicID, 2);
+  Delay(10);
+  // remote CPU read the IPI?
+  if not is_apic_ready then
+  begin // some problem ?? we wait
+    Delay(100);
+    // Serious problem -> exit
     if not is_apic_ready then
-    begin // some problem ?? we wait
-      Delay(100);
-      // Serious problem -> exit
-      if not is_apic_ready then
-        Exit;
+    begin
+     Result := False;
+     Exit;
     end;
-    send_apic_startup(ApicID, 2);
-    Delay(10);
-    Dec(Attempt);
   end;
+  send_apic_startup(ApicID, 2);
+  Delay(10);
   esp_tmp := Pointer(SizeUInt(esp_tmp) - size_start_stack);
 end;
 
@@ -1106,12 +1167,12 @@ begin
       Cores[cp.Apic_id].ApicID := cp.Apic_id;
       Cores[cp.Apic_id].Present := True;
       m := Pointer(SizeUInt(m)+SizeOf(mp_processor_entry));
-      // boot core doesn't need initilization
+      // boot core doesn't need initialization
       if (cp.flags and 2 ) = 2 then
       begin
         Cores[cp.Apic_id].CpuBoot := True ;
-        Cores[cp.Apic_id].InitConfirmation := true;
-	Cores[cp.Apic_id].Present := true;
+        Cores[cp.Apic_id].InitConfirmation := True;
+	Cores[cp.Apic_id].Present := True;
       end;
     end else
     begin
@@ -1248,8 +1309,8 @@ begin
                 if Processor.apicid = 0 then
                 begin
                   Cores[Processor.apicid].CPUBoot := True;
-                  Cores[Processor.apicid].InitConfirmation := true;
-		  Cores[Processor.apicid].Present := true;
+                  Cores[Processor.apicid].InitConfirmation := True;
+		  Cores[Processor.apicid].Present := True;
                 end;
               end;
             end;
@@ -1349,6 +1410,29 @@ begin
   Bit_Set(Pointer(SizeUInt(PDE_Table) + SizeOf(TDirectoryPageEntry)*I_PDE),4);
 end;
 
+
+// Set Page as Read Only
+// "Add" is Pointer to page, It's a multiple of 2MB (Page Size)
+procedure SetPageReadOnly(Add: Pointer);
+var
+  I_PML4,I_PPD,I_PDE: LongInt;
+  PDD_Table, PDE_Table, Entry: PDirectoryPage;
+  Page: QWord;
+begin
+  Page := QWord(Add);
+  I_PML4:= Page div 512*1024*1024*1024;
+  I_PPD := (Page div (1024*1024*1024)) mod 512;
+  I_PDE := (Page div (1024*1024*2)) mod 512;
+  Entry:= Pointer(SizeUInt(PML4_Table) + SizeOf(TDirectoryPageEntry)*I_PML4);
+  PDD_Table := Pointer((entry.PageDescriptor shr 12)*4096);
+  Entry := Pointer(SizeUInt(PDD_Table) + SizeOf(TDirectoryPageEntry)*I_PPD);
+  PDE_Table := Pointer((Entry.PageDescriptor shr 12)*4096);
+  // 2 MB page's entry
+  Bit_Reset(Pointer(SizeUInt(PDE_Table) + SizeOf(TDirectoryPageEntry)*I_PDE), 1);
+end;
+
+
+
 // Cache Manager Initialization
 procedure CacheManagerInit;
 var
@@ -1358,11 +1442,89 @@ begin
   PML4_Table := Pointer(PDADD);
   // first two pages aren't cacheable (0-2*PAGE_SIZE)
   RemovePageCache(Page);
+  // first page is read only
+  SetPageReadOnly(Page);
   Page := Pointer(SizeUInt(Page) + PAGE_SIZE);
   RemovePageCache(Page);
   // The whole kernel is cacheable from bootloader
   FlushCr3;
 end;
+
+//
+// Monitor/MWait Support
+//
+
+// NOTE: addr must be set as a write-back memory
+procedure monitor(addr: pointer; ext: DWORD; hint: DWORD);
+begin
+If LargestMonitorLine <> 0 then
+begin
+  asm
+   mov rax, addr
+   mov ecx, ext
+   mov edx, hint
+   monitor
+  end ['RAX', 'ECX', 'EDX'];
+end;
+end;
+
+// NOTE: processor has to support mwait/monitor instrucctions
+procedure mwait(ext: DWORD; hint: DWORD);
+begin
+If LargestMonitorLine <> 0 then
+begin
+asm
+  mov ecx, ext
+  mov eax, hint
+  mwait
+end ['ECX', 'EAX']
+// halt if mwait is not supported
+end
+ else
+ begin
+  asm
+   hlt
+  end;
+end;
+  asm
+  hlt
+  end;
+end;
+
+// Check if Monitor/MWait is supported
+procedure MWaitInit;
+begin
+  asm
+    mov eax, 05h
+    cpuid
+    mov LargestMonitorLine, ebx
+    mov SmallestMonitorLine, eax
+  end ['EAX', 'EBX'];
+end;
+
+procedure hlt;assembler;
+asm
+  hlt
+end;
+
+//
+// Memory barriers API
+//
+procedure ReadBarrier;assembler;nostackframe;{$ifdef SYSTEMINLINE}inline;{$endif}
+asm
+  lfence
+end;
+
+procedure ReadWriteBarrier;assembler;nostackframe;{$ifdef SYSTEMINLINE}inline;{$endif}
+asm
+  mfence
+end;
+
+procedure WriteBarrier;assembler;nostackframe;{$ifdef SYSTEMINLINE}inline;{$endif}
+asm
+  sfence
+end;
+
 
 // Architecture's variables initialization
 procedure ArchInit;
@@ -1370,6 +1532,7 @@ var
   I: LongInt;
 begin
   // the bootloader creates the idt
+  // TODO: we should move the IDT
   idt_gates := Pointer(IDTADDRESS);
   FillChar(PChar(IDTADDRESS)^, SizeOf(TInteruptGate)*256, 0);
   RelocateIrqs;
@@ -1385,11 +1548,13 @@ begin
   // CPU Exceptions
   for I := 0 to 32 do
     CaptureInt(I, @Interruption_Ignore);
+  CaptureInt(INTER_CORE_IRQ, @Apic_IRQ_Ignore);
   EnableInt;
   Now(@StartTime);
+  enable_local_apic;
   SMPInitialization;
-  // initialization of Floating Point Unit
   SSEInit;
+  MWaitInit;
 end;
 
 end.

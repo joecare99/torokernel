@@ -47,6 +47,11 @@ implementation
 
 uses Console, Process;
 
+{$MACRO ON}
+{$DEFINE EnableInt := asm sti;end;}
+{$DEFINE DisableInt := asm pushf;cli;end;}
+{$DEFINE RestoreInt := asm popf;end;}
+
 var
 	LockDebug: UInt64 = 3;
 
@@ -87,14 +92,15 @@ begin
 	RestoreInt;
 end;
 
-// FIXME: I should be incremented
+// Print in decimal form
 procedure DebugPrintDecimal(Value: PtrUInt);
 var
   I, Len: Byte;
-  S: string[64];
+  // 21 is the max number of characters needed to represent 64 bits number in decimal
+  S: string[21];
 begin
   Len := 0;
-  I := 10;
+  I := 21;
   if Value = 0 then
   begin
     SendChar('0');
@@ -102,36 +108,39 @@ begin
   begin
     while Value <> 0 do
     begin
-      S[I] := XChar((Value mod 10) + $30);
+      S[I] := AnsiChar((Value mod 10) + $30);
       Value := Value div 10;
-      Dec(I);
-      Inc(Len);
+      I := I-1;
+      Len := Len+1;
     end;
-    if (Len <> 10) then
-    begin
-      S[0] := XChar(Len);
-      for I := 1 to Len do
-      begin
-        S[I] := S[11-Len];
-        Dec(Len);
-      end;
-    end else
-    begin
-      S[0] := XChar(10);
-    end;
-    for I := 1 to ord(S[0]) do
-      SendChar(S[I]);
+    S[0] := XChar(Len);
+   for I := (sizeof(S)-Len) to sizeof(S)-1 do
+   begin
+    SendChar(S[I]);
+   end;
   end;
 end;
 
 procedure DebugPrintHexa(const Value: PtrUInt);
 var
   I: Byte;
+  P: Boolean;
 begin
+  P := False;
   SendChar('0');
   SendChar('x');
+  if (Value = 0) then
+  begin
+    SendChar('0');
+    Exit;
+  end;
   for I := SizeOf(PtrUInt)*2-1 downto 0 do
-    SendChar(HEX_CHAR[Value shr (I*4) and $F]);
+  begin
+   if not(P) and (HEX_CHAR[(Value shr (I*4)) and $0F] <> '0') then
+     P:= True;
+   if P then
+     SendChar(HEX_CHAR[(Value shr (I*4)) and $0F]);
+  end;
 end;
 
 procedure DebugPrintString(const S: shortstring);
@@ -229,6 +238,11 @@ begin
             end;
             J:=J+1;
           end;
+        'r':
+          begin
+            DebugPrintDecimal (read_rdtsc);
+            J:=J+1;
+          end;
         't': begin
                Now(@tmp);
 			   if (tmp.Day < 10) then DebugPrintDecimal  (0);
@@ -273,12 +287,15 @@ begin
   SpinLock (3,4,LockDebug);
   CPUI := GetApicID;
   Thread := Cpu[CPUI].CurrentThread;
-  WriteSerial('\t CPU%d Thread#%d ',[CPUI, Int64(PtrUInt(Thread))]);
+  {$IFDEF UseStampCounterinDebug}
+     WriteSerial('[\r] CPU%d Thread#%d ',[CPUI, Int64(PtrUInt(Thread))]);
+  {$ELSE}
+     WriteSerial('[\t] CPU%d Thread#%d ',[CPUI, Int64(PtrUInt(Thread))]);
+  {$ENDIF}
   WriteSerial (Format, Args);
   LockDebug := 3;
   RestoreInt;
 end;
-
 
 
 // initialize the debuging
@@ -289,8 +306,13 @@ begin
   write_portb (0, BASE_COM_PORT+1);
   write_portb (1, BASE_COM_PORT);
   write_portb (3, BASE_COM_PORT+3);
-  WriteConsole ('Toro on /Vdebug mode/n using /VCOM1/n\n',[]);
+  WriteConsoleF ('Toro on /Vdebug mode/n using /VCOM1/n\n',[]);
   WriteDebug('Initialization of debugging console.\n',[]);
+  {$IFDEF DebugCrash}
+     WriteDebug('Crash dumping is Enabled\n',[]);
+  {$ELSE}
+     WriteDebug('Crash dumping is Disable\n',[]);
+  {$ENDIF}
   {$IFDEF DCC} System.DebugTraceProc := @DebugTrace; {$ENDIF}
 end;
 

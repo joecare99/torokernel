@@ -10,6 +10,7 @@
 //
 // Changes :
 //
+// 19 / 10 / 2017 Adding support of irq core affinity
 // 12 / 03 / 2017 v3.
 // 07 / 03 / 2009 v2.
 // 22 / 02 / 2007 v1.
@@ -36,11 +37,18 @@ unit IdeDisk;
 interface
 
 {$I ..\Toro.inc}
+{$IFDEF DEBUG}
 //{$DEFINE DebugIdeDisk}
+{$ENDIF}
 
 uses Console, Arch, FileSystem, Process, Debug;
 
 implementation
+
+{$MACRO ON}
+{$DEFINE EnableInt := asm sti;end;}
+{$DEFINE DisableInt := asm pushf;cli;end;}
+{$DEFINE RestoreInt := asm popf;end;}
 
 const
  // max number of drivers supported
@@ -267,26 +275,26 @@ begin
   Result := (Temp and (1 shl 3)) <> 0;
 end;
 
-procedure ATAIn(Buffer: Pointer; IOPort: LongInt); {$IFDEF Inline} inline;{$ENDIF}
+procedure ATAIn(Buffer: Pointer; IOPort: LongInt);
 asm // RCX: Buffer, RDX: IOPort
-  {$IFDEF DCC} push rdi {$ENDIF}
+   push rdi
   {$IFDEF LINUX} mov edx, IOPort {$ENDIF}
   mov rdi, Buffer
   add rdx, ATA_DATA
   mov rcx, 256
   rep insw
-  {$IFDEF DCC} pop rdi {$ENDIF}
+  pop rdi
 end;
 
-procedure ATAOut(Buffer: Pointer; IOPort: LongInt); {$IFDEF Inline} inline;{$ENDIF}
+procedure ATAOut(Buffer: Pointer; IOPort: LongInt);
 asm // RCX: Buffer, RDX: IOPort
-  {$IFDEF DCC} push rsi {$ENDIF}
+  push rsi
   {$IFDEF LINUX} mov edx, IOPort {$ENDIF}
   mov rsi, Buffer
   add rdx, ATA_DATA
   mov rcx, 256
   rep outsw
-  {$IFDEF DCC} pop rsi {$ENDIF}
+  pop rsi
 end;
 
 // Prepare the Controller to Operation.
@@ -339,9 +347,9 @@ begin
           Ctr.Minors[Minor+I].FileDesc.Minor:=Minor+I;
 	  Ctr.Minors[Minor+I].FileDesc.BlockSize:= BLKSIZE;
           Ctr.Minors[Minor+I].FileDesc.Next:=nil;
-	  WriteConsole('IdeDisk: /V', []);
-          WriteConsole(ATANames[Ctr.Driver.Major], []);
-	  WriteConsole('/n, Minor: /V%d/n, Size: /V%d/n Mb, Type: /V%d/n\n',[Minor+I,Entry.Size div 2048,Entry.pType]);
+	  WriteConsoleF('IdeDisk: /V', []);
+          WriteConsoleF(ATANames[Ctr.Driver.Major], []);
+	  WriteConsoleF('/n, Minor: /V%d/n, Size: /V%d/n Mb, Type: /V%d/n\n',[Minor+I,Entry.Size div 2048,Entry.pType]);
 	  {$IFDEF DebugIdeDisk} WriteDebug('ATADetectPartition: Controller: %d, Disk: %d --> Ok\n', [Ctr.Driver.Major, Minor+I]); {$ENDIF}
         end;
         Inc(Entry);
@@ -385,9 +393,9 @@ begin
         ATAControllers[ControllerNo].Minors[DriveNo*5].FileDesc.BlockSize:= BLKSIZE;
         ATAControllers[ControllerNo].Minors[DriveNo*5].FileDesc.Next:= nil;
         {$IFDEF DebugIdeDisk} WriteDebug('ATADetectController - Controller: %d, Disk: %d --> Ok\n', [ControllerNo, DriveNo*5]); {$ENDIF}
-        WriteConsole('IdeDisk: /V', []);
-        WriteConsole(ATANames[ATAControllers[ControllerNo].Driver.Major], []);
-        WriteConsole('/n, Minor: /V%d/n, Size: /V%d/n Mb, Type: /V%d/n\n', [DriveNo*5, ATA_Buffer.LBA_Capacity div 2048, NOT_FILESYSTEM]);
+        WriteConsoleF('IdeDisk: /V', []);
+        WriteConsoleF(ATANames[ATAControllers[ControllerNo].Driver.Major], []);
+        WriteConsoleF('/n, Minor: /V%d/n, Size: /V%d/n Mb, Type: /V%d/n\n', [DriveNo*5, ATA_Buffer.LBA_Capacity div 2048, NOT_FILESYSTEM]);
         ATADetectPartition(@ATAControllers[ControllerNo], DriveNo*5);
       end
       {$IFDEF DebugIdeDisk}
@@ -399,14 +407,14 @@ begin
     {$IFDEF DebugIdeDisk} WriteDebug('ATADetectController - Before RegisterBlockDriver Controller: %d\n', [ControllerNo]); {$ENDIF}
     RegisterBlockDriver(@ATAControllers[ControllerNo].Driver);
     {$IFDEF DebugIdeDisk} WriteDebug('ATADetectController - After RegisterBlockDriver Controller: %d\n', [ControllerNo]); {$ENDIF}
-    // Irq Handlers
-    IrqOn(ATAControllers[ControllerNo].IRQ);
-    {$IFDEF DebugIdeDisk} WriteDebug('ATADetectController - After Irq_On Controller: %d\n', [ControllerNo]); {$ENDIF}
-    CaptureInt(ATAControllers[ControllerNo].IRQ+32, ATAControllers[ControllerNo].IrqHandler);
-    {$IFDEF DebugIdeDisk} WriteDebug('ATADetectController - After CaptureInt Controller: %d\n', [ControllerNo]); {$ENDIF}
   end;
   {$IFDEF DebugIdeDisk} WriteDebug('ATADetectController - Done.\n', []); {$ENDIF}
 end;
+
+var
+  ATA0onCPUID: longint;
+
+procedure ATA0IrqDelivery; forward;
 
 // Dedicate Controller to Cpu
 procedure ATADedicate(Driver:PBlockDriver;CPUID: LongInt);
@@ -421,17 +429,87 @@ begin
     // the file descriptor is enqued in a dedicate filesystem
     DedicateBlockFile(@ATAControllers[Driver.Major].Minors[I].FileDesc,CPUID);
     {$IFDEF DebugIdeDisk} WriteDebug('IdeDisk: Dedicate Controller %d ,Disk: %q to CPU %d\n', [Int64(ATAControllers[Driver.Major].Minors[I].FileDesc.Minor), Driver.Major, CPUID]); {$ENDIF}
+    // Irq Handlers
+    IrqOn(ATAControllers[Driver.Major].IRQ);
+    if (CPUID <> 0) then
+    begin
+      {$IFDEF DebugIdeDisk} WriteDebug('ATADetectController - After Irq_On Controller: %d\n', [Driver.Major]); {$ENDIF}
+      // TODO: to change in the case of ATA1
+      ATA0onCPUID := CPUID;
+      CaptureInt(ATAControllers[Driver.Major].IRQ+32, @ATA0IrqDelivery);
+      // 76 is the interruption vector for the ipi
+      CaptureInt(76, ATAControllers[Driver.Major].IrqHandler);
+     {$IFDEF DebugIdeDisk} WriteDebug('ATADetectController - After CaptureInt Controller: %d\n', [Driver.Major]); {$ENDIF}
+    end
+    else begin
+      CaptureInt(ATAControllers[Driver.Major].IRQ+32, ATAControllers[Driver.Major].IrqHandler);
+    end;
   end;
 end;
  
 // Irq Handlers only for ATA0 and ATA1 Standart Controllers.
 procedure ATAHandler(Controller: LongInt);
 begin
-  eoi;
+  if GetApicID <> 0 then
+   eoi_apic
+  else
+    eoi;
   ATAControllers[Controller].Driver.WaitOn.State := tsReady;
   {$IFDEF DebugIdeDisk} WriteDebug('IdeDisk: ATA0 Irq Captured, Thread Wake Up: #%h\n', [PtrUInt(ATAControllers[Controller].Driver.WaitOn)]); {$ENDIF}
 end;
 
+
+// Handler to deliver the ATA0 irq to the core in ATA0onCPUID
+procedure ATA0IrqDelivery; {$IFDEF FPC} [nostackframe]; assembler; {$ENDIF}
+asm
+// save registers
+push rbp
+push rax
+push rbx
+push rcx
+push rdx
+push rdi
+push rsi
+push r8
+push r9
+push r10
+push r11
+push r12
+push r13
+push r14
+push r15
+// protect the stack
+mov r15 , rsp
+mov rbp , r15
+sub r15 , 32
+mov  rsp , r15
+// deliver the irq to the correspondent core
+mov ecx, ATA0onCPUID
+mov edx, 76
+call send_apic_int
+call eoi
+mov rsp , rbp
+// restore the registers
+pop r15
+pop r14
+pop r13
+pop r12
+pop r11
+pop r10
+pop r9
+pop r8
+pop rsi
+pop rdi
+pop rdx
+pop rcx
+pop rbx
+pop rax
+pop rbp
+db $48
+db $cf
+end;
+
+// irq handler used when ATA0 is dedicated to core 0
 procedure ATA0IrqHandler; {$IFDEF FPC} [nostackframe]; assembler; {$ENDIF}
 asm
   {$IFDEF DCC} .noframe {$ENDIF}
@@ -445,8 +523,12 @@ asm
   push rsi
   push r8
   push r9
+  push r10
+  push r11
+  push r12
   push r13
   push r14
+  push r15
   // protect the stack
   mov r15 , rsp
   mov rbp , r15
@@ -463,8 +545,12 @@ asm
   Call ATAHandler
   mov rsp , rbp
   // restore the registers
+  pop r15
   pop r14
   pop r13
+  pop r12
+  pop r11
+  pop r10
   pop r9
   pop r8
   pop rsi
@@ -491,8 +577,12 @@ asm
   push rsi
   push r8
   push r9
+  push r10
+  push r11
+  push r12
   push r13
   push r14
+  push r15
   // protect the stack
   mov r15 , rsp
   mov rbp , r15
@@ -509,8 +599,12 @@ asm
   Call ATAHandler
   mov rsp , rbp
   // restore the registers
+  pop r15
   pop r14
   pop r13
+  pop r12
+  pop r11
+  pop r10
   pop r9
   pop r8
   pop rsi
@@ -538,7 +632,7 @@ begin
   // sending Commands
   ATAPrepare(Ctr,FileDesc.Minor,Block,Count);
   ATASendCommand(Ctr,ATA_READ);
-  {$IFDEF DebugIdeDisk} WriteDebug('IdeDisk: prepared and commands sent, Block:%d, Count:%d\n', [Block, Count]); {$ENDIF}
+  {$IFDEF DebugIdeDisk} WriteDebug('ATAReadBlock: prepared and commands sent, Block: %d, Count: %d, Buffer: %h\n', [Block, Count, PtrUInt(Buffer)]); {$ENDIF}
   repeat
     SysThreadSwitch; // wait for the irq
     if not ATADataReady(Ctr) or ATAError(Ctr) then
@@ -553,7 +647,7 @@ begin
   // returns the number of blocks read
   Result := ReadCount;
   FreeDevice(FileDesc.BlockDriver);
-  {$IFDEF DebugIdeDisk} WriteDebug('IdeDisk: ATAReadBlock, Handle: %h, Begin Sector: %d, End Sector: %d\n', [PtrUint(FileDesc), Block, Block + ReadCount]); {$ENDIF}
+  {$IFDEF DebugIdeDisk} WriteDebug('ATAReadBlock:, Handle: %h, Begin Sector: %d, End Sector: %d\n', [PtrUint(FileDesc), Block, Block + ReadCount]); {$ENDIF}
 end;
 
 
@@ -572,6 +666,7 @@ begin
   Ctr.Driver.WaitOn.state := tsSuspended;
   ATAPrepare(Ctr,FileDesc.Minor,Block,Count);
   ATASendCommand(Ctr,ATA_WRITE);
+  {$IFDEF DebugIdeDisk} WriteDebug('ATAWriteBlock: prepared and commands sent, Block: %d, Count: %d, Buffer: %h\n', [Block, Count, PtrUInt(Buffer)]); {$ENDIF}
   // writing
   repeat
     DisableInt;
@@ -597,7 +692,7 @@ end;
 // Detection of IDE devices.
 procedure IDEInit;
 begin
-  WriteConsole('Looking for ATA-IDE Disk ...\n',[]);
+  WriteConsoleF('Looking for ATA-IDE Disk ...\n',[]);
   // standart ATA interface
   // master controller
   ATAControllers[0].IOPort := $1f0;
