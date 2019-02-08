@@ -10,7 +10,10 @@
 {$ENDIF}
 //{$DEFINE cpui386}
 //{$DEFINE CPUX86_64}
-//{$DEFINE DEBUG}
+//{$DEFINE EnableDebug}
+{$DEFINE EnablePing}
+//{$DEFINE ProfileBootTime}
+//{$DEFINE ToroHeadLess}
 //{$DEFINE DebugCrash}
 //{$DEFINE DebugArch}
 //{$DEFINE DebugFS}
