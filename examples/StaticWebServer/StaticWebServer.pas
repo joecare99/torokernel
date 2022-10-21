@@ -1,7 +1,7 @@
 //
 // StaticWebServer.pas
 //
-// Copyright (c) 2003-2019 Matias Vara <matiasevara@gmail.com>
+// Copyright (c) 2003-2021 Matias Vara <matiasevara@gmail.com>
 // All Rights Reserved
 //
 // This program is free software: you can redistribute it and/or modify
@@ -24,21 +24,20 @@ program StaticWebServer;
  {$mode delphi}
 {$ENDIF}
 
-{%RunCommand qemu-system-x86_64 -m 256 -smp 1 -drive format=raw,file=StaticWebServer.img -net nic,model=virtio -net tap,ifname=TAP2 -drive file=fat:rw:StaticWebServerFiles,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0,addr=06 -serial file:torodebug.txt}
-{%RunFlags BUILD-}
-
 uses
-  Kernel in '..\..\rtl\Kernel.pas',
-  Process in '..\..\rtl\Process.pas',
-  Memory in '..\..\rtl\Memory.pas',
-  Debug in '..\..\rtl\Debug.pas',
-  Arch in '..\..\rtl\Arch.pas',
-  Filesystem in '..\..\rtl\Filesystem.pas',
-  VirtIO in '..\..\rtl\drivers\VirtIO.pas',
-  VirtIOFS in '..\..\rtl\drivers\VirtIOFS.pas',
-  VirtIOVSocket in '..\..\rtl\drivers\VirtIOVSocket.pas',
-  Console in '..\..\rtl\drivers\Console.pas',
-  Network in '..\..\rtl\Network.pas';
+  Kernel,
+  Process,
+  Memory,
+  Debug,
+  Arch,
+  Filesystem,
+  VirtIO,
+  {$IFDEF UseGDBstub}VirtIOConsole,{$ENDIF}
+  VirtIOFS,
+  VirtIOVSocket,
+  Console,
+  {$IFDEF UseGDBstub}Gdbstub,{$ENDIF}
+  Network;
 
 const
   HeaderOK = 'HTTP/1.0 200'#13#10'Content-type: ';
@@ -237,7 +236,7 @@ begin
 end;
 
 begin
-  if KernelParamCount = 0 then
+  if KernelParamCount < 4 then
   begin
     WriteConsoleF('Wrong number of kernel parameters, exiting\n', []);
     Exit;
@@ -245,11 +244,12 @@ begin
   else
   begin
     netdriver := GetKernelParam(0);
-    DedicateNetworkSocket(netdriver); 
+    DedicateNetworkSocket(netdriver);
     fsdriver := GetKernelParam(1);
     blkdriver := GetKernelParam(2);
     DedicateBlockDriver(blkdriver, 0);
-    SysMount(fsdriver, blkdriver, 0);
+    if not SysMount(fsdriver, blkdriver, 0) then
+      Exit;
     if StrCmp(GetKernelParam(3), 'noconsole', strlen('noconsole')) then
       HeadLess := True;
   end;

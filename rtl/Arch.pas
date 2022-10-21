@@ -1,10 +1,9 @@
 //
 // Arch.pas
 //
-// This unit contains the functions and procedures for a particular architecture.
-// In this case, the unit is defined for x86-64.
+// This units contains the the code that is platform-dependent.
 //
-// Copyright (c) 2003-2018 Matias Vara <matiasevara@gmail.com>
+// Copyright (c) 2003-2020 Matias Vara <matiasevara@gmail.com>
 // All Rights Reserved
 //
 // This program is free software: you can redistribute it and/or modify
@@ -29,6 +28,8 @@ interface
 
 const
   EXC_DIVBYZERO = 0;
+  EXC_INT3 = 3;
+  EXC_INT1 = 1;
   EXC_NMI = 2;
   EXC_OVERFLOW = 4;
   EXC_BOUND = 5;
@@ -45,6 +46,8 @@ const
 
   // Max CPU speed in Mhz
   MAX_CPU_SPEED_MHZ = 2393;
+
+  PERCPUAPICID = 0;
 
 type
 {$IFDEF UNICODE}
@@ -92,19 +95,21 @@ type
     InitProc: procedure;
   end;
 
+// Utils
+procedure InttoStr(Value: PtrUInt; buff: PXChar);
+function StrCmp(p1, p2: PXChar; Len: LongInt): Boolean;
+procedure StrConcat(left, right, dst: PXChar);
+
+procedure SetPerCPUVar(Off: Byte; Value: QWORD);
+function GetGSOffset(off: Byte): QWORD;
 procedure bit_reset(Value: Pointer; Offset: QWord);
 procedure bit_set(Value: Pointer; Offset: QWord); assembler;
 function bit_test ( Val : Pointer ; pos : QWord ) : Boolean;
 procedure change_sp (new_esp : Pointer ) ;
 procedure Delay(ms: LongInt);
-procedure eoi;
-function GetApicID: Byte;
+function GetCoreId: Byte; inline;
 function GetApicBaseAddr: Pointer;
-function get_irq_master: Byte;
-function get_irq_slave: Byte;
-procedure IrqOn(irq: Byte);
 procedure IOApicIrqOn(Irq: Byte);
-procedure IrqOff(irq: Byte);
 function is_apic_ready: Boolean ;
 procedure NOP;
 function read_portb(port: Word): Byte;
@@ -122,14 +127,12 @@ procedure CaptureException(Exception: Byte; Handler: Pointer);
 procedure ArchInit;
 procedure Now (Data: PNow);
 procedure Interruption_Ignore;
-procedure IRQ_Ignore;
 function GetMemoryRegion (ID: LongInt ; Buffer : PMemoryRegion): LongInt;
 function InitCore(ApicID: Byte): Boolean;
 procedure SetPageCache(Add: Pointer);
 procedure RemovePageCache(Add: Pointer);
 function SecondsBetween(const ANow: TNow;const AThen: TNow): LongInt;
 procedure ShutdownInQemu;
-procedure Reboot;
 procedure DelayMicro(microseg: LongInt);
 function read_portw(port: Word): Word;
 procedure SetPageReadOnly(Add: Pointer);
@@ -144,6 +147,7 @@ procedure WriteBarrier;assembler;{$ifdef SYSTEMINLINE}inline;{$endif}
 function GetKernelParam(I: LongInt): Pchar;
 function read_ioapic_reg(offset: dword): dword;
 procedure write_ioapic_reg(offset, val: dword);
+function find_msb_set(value: DWORD): LongInt; assembler;
 
 const
   MP_START_ADD = $e0000;
@@ -162,6 +166,7 @@ const
   PVH_MEMMAP_ENTRIES = 48;
   PVH_CMDLINE_PADDR = 24;
   BASE_IRQ = 32;
+  MAX_ADDR_MEM = 512*1024*1014*1014;
 
 var
   CPU_COUNT: LongInt;
@@ -205,7 +210,8 @@ const
   // Address of Page Directory
   PDADD = $100000;
   Kernel_Param = $200000;
-  IDTADDRESS = $3020;
+  IDTADDRESS = $3080;
+  GDTADDRESS = $3000;
 
   Kernel_Code_Sel = $18;
   Kernel_Data_Sel = $10;
@@ -281,6 +287,16 @@ type
     res: DWORD;
   end;
 
+  PDescriptor = ^TDescriptor;
+  TDescriptor = record
+    limit_0_15: Word;
+    base_0_15: Word;
+    base_23_16: Byte;
+    tipe: Byte;
+    limit_16_19: Byte;
+    base_31_24: Byte;
+  end;
+
   TInterruptGateArray = array[0..255] of TInteruptGate;
   PInterruptGateArray = ^TInterruptGateArray;
   p_intr_gate_struct = ^TInteruptGate;
@@ -302,6 +318,65 @@ type
     pad: array[0..1] of BYTE;
   end;
 
+
+function GetApicId: Byte; forward;
+
+procedure InttoStr(Value: PtrUInt; buff: PXChar);
+var
+  I, Len: Byte;
+  // 21 is the max number of characters needed to represent 64 bits number in decimal
+  S: string[21];
+begin
+  Len := 0;
+  I := 21;
+  if Value = 0 then
+  begin
+    buff^ := '0';
+    buff  := buff + 1;
+    buff^ := #0;
+  end else
+  begin
+    while Value <> 0 do
+    begin
+      S[I] := AnsiChar((Value mod 10) + $30);
+      Value := Value div 10;
+      I := I-1;
+      Len := Len+1;
+    end;
+    S[0] := Char(Len);
+   for I := (sizeof(S)-Len) to sizeof(S)-1 do
+   begin
+    buff^ := S[I];
+    buff +=1;
+   end;
+   buff^ := #0;
+  end;
+end;
+
+function StrCmp(p1, p2: PXChar; Len: LongInt): Boolean;
+var
+  i: LongInt;
+begin
+  Result := False;
+  for i := 0 to Len-1 do
+  begin
+    if p1^ <> p2^ then
+      Exit;
+    p1 += 1;
+    p2 += 1;
+  end;
+  Result := true;
+end;
+
+procedure StrConcat(left, right, dst: PXChar);
+begin
+  Move(left^,dst^,Length(left));
+  dst := dst + Length(left);
+  Move(right^,dst^,Length(right));
+  dst +=Length(right);
+  dst^ := #0;
+end;
+
 var
   idt_gates: PInterruptGateArray; // Pointer to IDT
   // pointer to start of the day structure
@@ -317,6 +392,53 @@ begin
   idt_gates^[int].handler_32_63 := DWORD(PtrUInt(Handler) shr 32);
   idt_gates^[int].res := 0;
   idt_gates^[int].nu := 0;
+end;
+
+const
+  MAX_PERCPU_VAR = 10;
+
+var
+  PerCPUVar: array[0..MAX_CPU-1] of array[0..MAX_PERCPU_VAR-1] of QWORD;
+
+procedure LoadGs(Des: Longint); assembler;
+asm
+   mov gs, word Des
+end;
+
+procedure InitGS;
+var
+  gdt_p : PDescriptor;
+  sel: LongInt;
+  CoreId: Byte;
+  base: Pointer;
+begin
+  CoreId := GetApicId;
+  PerCPUVar[CoreId][PERCPUAPICID] := CoreId;
+  base := @PerCPUVar[CoreId][PERCPUAPICID];
+  sel := sizeof(TDescriptor) * (CoreId + 5);
+  gdt_p := Pointer(GDTADDRESS + sel);
+  gdt_p.limit_0_15 := $ffff;
+  gdt_p.base_0_15 := DWORD(PtrUInt(base)) and $ffff;
+  gdt_p.base_23_16 := (DWORD(PtrUInt(base)) and $ff0000) shr 16;
+  gdt_p.tipe := $93;
+  gdt_p.limit_16_19 := $cf;
+  gdt_p.base_31_24 := (DWORD(PtrUInt(base)) and $ff000000) shr 24;
+  LoadGs(sel);
+end;
+
+function GetGSOffset(off: byte): QWORD; assembler;
+asm
+  mov rax, QWORD PTR gs:off
+end;
+
+function GetCoreId: Byte; inline;
+begin
+  Result := Byte(GetGSOffset(PERCPUAPICID));
+end;
+
+procedure SetPerCPUVar(Off: Byte; Value: QWORD);
+begin
+  PerCPUVar[GetApicId][Off] := Value;
 end;
 
 procedure CaptureException(Exception: Byte; Handler: Pointer);
@@ -449,15 +571,18 @@ end;
 
 function SpinLock(CmpVal, NewVal: UInt64; var addval: UInt64): UInt64; assembler;
 asm
+    cmp CPU_COUNT, 1
+    je @break
   @spin:
-    mov rax, cmpval
+    mov rax, CmpVal
     {$IFDEF LINUX} lock cmpxchg [rdx], rsi {$ENDIF}
     {$IFDEF WINDOWS} lock cmpxchg [r8], rdx {$ENDIF}
     pause
     jnz @spin
+ @break:
 end;
 
-function GetApicID: Byte; inline;
+function GetApicId: Byte; inline;
 begin
   Result := PDWORD(apicid_reg)^ shr 24;
 end;
@@ -501,7 +626,7 @@ var
  vector: ^DWORD;
 begin
   vector := Pointer(lint1_reg);
-  // lint1 triggers vector 2 as NMI (4) 
+  // lint1 triggers vector 2 as NMI (4)
   vector^ := 2 or (4 shl 8);
 end;
 
@@ -549,75 +674,12 @@ asm
 end;
 
 const
-  Status_Port : array[0..1] of Byte = ($20,$A0);
-  Mask_Port : array[0..1] of Byte = ($21,$A1);
-  PIC_MASK: array [0..7] of Byte =(1,2,4,8,16,32,64,128);
-
-procedure IrqOn(irq: Byte);
-begin
-  if irq > 7 then
-    write_portb(read_portb($a1) and (not pic_mask[irq-8]), $a1)
-  else
-    write_portb(read_portb($21) and (not pic_mask[irq]), $21);
-end;
-
-const
   Level = $8000;
 // TODO: all irq are sent to core #0
 procedure IOApicIrqOn(Irq: Byte);
 begin
   // from linux, set to level otherwise remote-IRR is not clear
   write_ioapic_reg(irq * 2 + $10, irq + BASE_IRQ + Level);
-end;
-
-procedure IrqOff(irq: Byte);
-begin
-  if irq > 7 then
-    write_portb(read_portb($a1) or pic_mask[irq-8], $a1)
-  else
-    write_portb(read_portb($21) or pic_mask[irq], $21);
-end;
-
-procedure eoi;
-begin
-  write_portb($20, status_port[0]);
-  write_portb($20, status_port[1]);
-end;
-
-procedure all_irq_off;
-begin
-  write_portb($ff, mask_port[0]);
-  write_portb($ff, mask_port[1]);
-end;
-
-function get_irq_master: Byte ;
-begin
-  write_portb($b, $20);
-  NOP;
-  Result := read_portb($20);
-end;
-
-function get_irq_slave : Byte ;
-begin
-  write_portb($b, $a0);
-  NOP;
-  Result := read_portb($a0);
-end;
-
-const
-  cmos_port_reg = $70 ;
-  cmos_port_rw  = $71 ;
-
-procedure cmos_write(Data, Reg: Byte);
-begin
-  write_portb(Reg, cmos_port_reg);
-  write_portb(Data, cmos_port_rw);
-end;
-
-function cmos_read(Reg: Byte): Byte;
-begin
-  write_portb(Reg, cmos_port_reg);
-  Result := read_portb(cmos_port_rw);
 end;
 
 // This code has been extracted from DelphineOS <delphineos.sourceforge.net>
@@ -748,18 +810,6 @@ begin
   end;
 end;
 
-// reboot using keyboard
-procedure Reboot;
-var
-  good: Byte;
-begin
-  good := 2;
-  while good and 2 = 1 do
-    good := read_portb($64);
-  write_portb($FE, $64);
-  hlt;
-end;
-
 function read_rdtsc: Int64;
 var
   l, h: QWORD;
@@ -799,8 +849,17 @@ asm
   {$IFDEF LINUX} bts [rdi], rsi {$ENDIF}
 end;
 
-procedure change_sp(new_esp: Pointer); assembler ;{$IFDEF ASMINLINE} inline; {$ENDIF}
+// This function returns 32 if all bits are zero
+function find_msb_set(value: DWORD): LongInt; assembler;
 asm
+  mov rax, 32
+  bsf rax, rdi
+end;
+
+// change_sp() is only used to start executing PASCALMAIN
+procedure change_sp(new_esp: Pointer); [nostackframe] assembler; {$IFDEF ASMINLINE} inline; {$ENDIF}
+asm
+  xor rbp, rbp
   mov rsp, new_esp
   ret
 end;
@@ -923,7 +982,7 @@ begin
     mov edx, h
     mov ecx, MSR_KVM_SYSTEM_TIME_NEW
     wrmsr
-  end;
+  end ['EAX', 'EDX', 'ECX'];
 end;
 
 Type
@@ -946,13 +1005,12 @@ begin
     mov ecx, MSR_KVM_WALL_CLOCK_NEW
     wrmsr
     sfence
-  end;
+  end ['EAX', 'EDX', 'ECX'];
 end;
 
 procedure Now(Data: PNow);
 var
   Sec, Min, Hour: LongInt;
-  clk: KVMClock;
 begin
   Sec  := (StartTime.sec + (ToroClock.system_time div 1000000000)) mod 86400;
   Min  := (Sec div 60) mod 60 + StartTime.Min;
@@ -993,12 +1051,6 @@ end;
 
 procedure Interruption_Ignore; {$IFDEF FPC} [nostackframe]; assembler ; {$ENDIF}
 asm
-  db $48, $cf
-end;
-
-procedure IRQ_Ignore; {$IFDEF FPC} [nostackframe]; assembler ; {$ENDIF}
-asm
-  call EOI;
   db $48, $cf
 end;
 
@@ -1054,6 +1106,7 @@ var
 begin
   enable_local_apic;
   CpuID := GetApicID;
+  InitGS;
   Cores[CPUID].InitConfirmation := True;
   Cores[CPUID].InitProc;
 end;
@@ -1271,21 +1324,6 @@ begin
   Bit_Reset(Pointer(SizeUInt(PDE_Table) + SizeOf(TDirectoryPageEntry)*I_PDE), 1);
 end;
 
-procedure CacheManagerInit;
-var
-  Page: Pointer;
-begin
-  Page := nil;
-  PML4_Table := Pointer(PDADD);
-  // first two pages aren't cacheable (0-2*PAGE_SIZE)
-  RemovePageCache(Page);
-  // first page is read only
-  SetPageReadOnly(Page);
-  Page := Pointer(SizeUInt(Page) + PAGE_SIZE);
-  RemovePageCache(Page);
-  FlushCr3;
-end;
-
 // NOTE: addr must be set as a write-back memory
 procedure monitor(addr: Pointer; ext: DWORD; hint: DWORD);
 begin
@@ -1380,6 +1418,7 @@ var
 begin
   idt_gates := Pointer(IDTADDRESS);
   FillChar(PChar(IDTADDRESS)^, SizeOf(TInteruptGate)*256, 0);
+  InitGS;
   if sodpointer <> Nil then
   begin
     tmp := sodpointer + PVH_CMDLINE_PADDR;
@@ -1402,7 +1441,7 @@ begin
     KernelParam := Pointer(Kernel_Param);
   end;
   MemoryCounterInit;
-  CacheManagerInit;
+  PML4_Table := Pointer(PDADD);
   LocalCpuSpeed := PtrUInt(CalculateCpuSpeed);
   for I := 0 to 32 do
     CaptureInt(I, @Interruption_Ignore);
@@ -1422,4 +1461,3 @@ begin
 end;
 
 end.
-

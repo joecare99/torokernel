@@ -1,7 +1,7 @@
 //
 // Exception Handling
 //
-// Copyright (c) 2003-2018 Matias Vara <matiasevara@gmail.com>
+// Copyright (c) 2003-2020 Matias Vara <matiasevara@gmail.com>
 // All Rights Reserved
 //
 // This program is free software: you can redistribute it and/or modify
@@ -29,16 +29,16 @@ program ExceptionHandling;
 
 uses
   SysUtils,
-  Kernel in '..\..\rtl\Kernel.pas',
-  Process in '..\..\rtl\Process.pas',
-  Memory in '..\..\rtl\Memory.pas',
-  Debug in '..\..\rtl\Debug.pas',
-  Arch in '..\..\rtl\Arch.pas',
-  Filesystem in '..\..\rtl\Filesystem.pas',
-  Console in '..\..\rtl\drivers\Console.pas';
+  Kernel,
+  Process,
+  Memory,
+  Debug,
+  Arch,
+  Filesystem,
+  Console;
 
-// var
-//  tmp: TThreadID = 0;
+ var
+  tmp: TThreadID = 0;
 
 {$ASMMODE intel}
 
@@ -110,6 +110,7 @@ end;
 function Exception_Core2(Param: Pointer):PtrInt;
 begin
   //DoDivZero;
+  // no registra la interruption y el raise exception termina llamando a unhandle
   DoPageFault;
   //DoProtectionFault;
   //DoIllegalInstruction;
@@ -118,14 +119,13 @@ end;
 
 begin
   //tmp:= BeginThread(nil, 4096, Exception_Core2, nil, 1, tmp);
-  //SysThreadSwitch;
-  //DoDivZero;
+  DoDivZero;
   //try
   //   Raise EDivException.Create ('Division by Zero would occur');
   //except
   //  WriteConsoleF('Exception!\n',[]);
   //end;
-  DoPageFault;
+  //DoPageFault;
   //DoProtectionFault;
   //DoIllegalInstruction;
 end.

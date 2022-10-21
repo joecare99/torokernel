@@ -139,7 +139,7 @@ function XHeapUnstack(Heap: PXHeap): PXHeap;
 function ToroGetMem(Size: PtrUInt): Pointer;
 function ToroFreeMem(P: Pointer): Integer;
 function NumaFreeMem(P: Pointer): Integer;
-function ToroReAllocMem(P: Pointer; NewSize: PtrUInt): Pointer;
+function ToroReAllocMem(var P: Pointer; NewSize: PtrUInt): Pointer;
 function NumaReAllocMem(P: Pointer; NewSize: PtrUInt): Pointer;
 function SysCacheRegion(Add: Pointer; Size: PtrUInt): Boolean;
 function SysUnCacheRegion(Add: Pointer; Size: PtrUInt): Boolean;
@@ -613,7 +613,7 @@ begin
       Result := nil; // this maybe a cause for future memory leak (due to not releasing the whole root Scratch)
       Exit;
     end;
-    Result := XHeapAcquire(GetApicID);
+    Result := XHeapAcquire(GetCoreId);
     Root.StackHeaps[Root.StackHeapIndex] := Result;
     Inc(Root.StackHeapCount);
     Result.Root := Root;
@@ -649,7 +649,7 @@ begin
   {$IFDEF DebugMemory} WriteDebug('SplitChunk Chunk: %h Size: %d bytes\n', [PtrUInt(Chunk), ChunkSize]); {$ENDIF}
   {$IFDEF HEAP_STATS} BlockCount := 0; {$ENDIF}
   SX := 0; // avoid warning when using dcc64
-  CPU := GetApicID;
+  CPU := GetCoreId;
   while ChunkSize > 0 do
   begin
     // DO NOT use GetSX in this case, since we are locating the lower index and not the upper index
@@ -739,7 +739,7 @@ begin
     RestoreInt;
     Exit;
   end;
-  CPU := GetApicID;
+  CPU := GetCoreId;
   MemoryAllocator := @MemoryAllocators[CPU];
   SX := GetSX(Size);
   {$IFDEF HEAP_STATS_REQUESTED_SIZE}
@@ -877,7 +877,7 @@ begin
 end;
 
 // Expand (or truncate) the size of block pointed by p and return the new pointer
-function ToroReAllocMem(P: Pointer; NewSize: PtrUInt): Pointer;
+function ToroReAllocMem(var P: Pointer; NewSize: PtrUInt): Pointer;
 var
   CPU: Byte;
   IsFree: Byte;
@@ -1024,7 +1024,7 @@ begin
       BlockList.Count := 0;
       Chunk := Chunk + SizeOf(BLOCK_HEADER_SIZE);
       bSX := GetSX(BlockList.Capacity*SizeOf(Pointer));
-      SetHeaderSX(GetApicId, bSX, 0, Chunk);
+      SetHeaderSX(GetCoreId, bSX, 0, Chunk);
       BlockList.List := Chunk;
       ChunkSize := ChunkSize - DirectorySX[bSX] - sizeof(BLOCK_HEADER_SIZE);
       {$IFDEF HEAP_STATS} Inc(CurrentVirtualAllocated, BlockList.Capacity); {$ENDIF}
@@ -1071,8 +1071,8 @@ begin
   Panic(Buff.Length <= ALLOC_MEMORY_START,'DistributeMemoryRegions: Not enough memory to initialize\n', []);
   AssignableMemory := Buff.Length - (ALLOC_MEMORY_START - PtrUInt(Buff.Base));
   MemoryPerCpu := AssignableMemory div CPU_COUNT;
-  WriteConsoleF('System Memory ... /V%d/n MB\n', [AvailableMemory div 1024 div 1024]);
-  WriteConsoleF('Memory per Core ... /V%d/n MB\n', [MemoryPerCpu div 1024 div 1024]);
+  WriteConsoleF('System Memory ... %d MB\n', [AvailableMemory div 1024 div 1024]);
+  WriteConsoleF('Memory per Core ... %d MB\n', [MemoryPerCpu div 1024 div 1024]);
   {$IFDEF DebugMemory}
     WriteDebug('System Memory ... %d MB\n', [AvailableMemory div 1024 div 1024]);
     WriteDebug('Memory per Core ... %d MB\n', [MemoryPerCpu div 1024 div 1024]);
@@ -1085,7 +1085,7 @@ begin
     MemoryAllocator.Size := MemoryPerCpu;
     MemoryAllocator.EndAddress := Pointer(PtrUInt(StartAddress) + MemoryAllocator.Size - 1);
     MemoryAllocator.FreeSize := MemoryAllocator.Size;
-    WriteConsoleF('Core#%d, StartAddress: /V%h/n, EndAddress: /V%h/n\n',[CPU, PtrUInt(StartAddress), PtrUInt(MemoryAllocator.EndAddress)]);
+    WriteConsoleF('Core#%d, StartAddress: %h, EndAddress: %h\n',[CPU, PtrUInt(StartAddress), PtrUInt(MemoryAllocator.EndAddress)]);
     {$IFDEF DebugMemory}
       WriteDebug('Core#%d, StartAddress: %h, EndAddress: %h\n',[CPU, PtrUInt(StartAddress), PtrUInt(MemoryAllocator.EndAddress)]);
     {$ENDIF}
@@ -1142,6 +1142,8 @@ begin
   ToroMemoryManager.FreeMem := @ToroFreeMem;
   ToroMemoryManager.AllocMem := @ToroAllocMem;
   ToroMemoryManager.ReAllocMem := @ToroReAllocMem;
+  ToroMemoryManager.RelocateHeap := nil;
+  ToroMemoryManager.InitThread := nil;
   SetMemoryManager(ToroMemoryManager);
 end;
 

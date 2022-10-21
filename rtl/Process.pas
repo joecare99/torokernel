@@ -74,7 +74,6 @@ type
 
   TCPU = record
     ApicID: LongInt;
-    Idle: Boolean;
     CurrentThread: PThread;
     Threads: PThread;
     LastIRQ: QWORD;
@@ -96,7 +95,6 @@ const
   tsReady = 2 ;
   tsSuspended = 1 ;
   tsZombie = 4 ;
-  tsIdle = 6;
 
 // Interface function matching common declaration
 function BeginThread(SecurityAttributes: Pointer; StackSize: SizeUInt; ThreadFunction: TThreadFunc; Parameter: Pointer; CreationFlags: DWORD; var ThreadID: TThreadID): TThreadID;
@@ -113,6 +111,7 @@ procedure ThreadExit(Schedule: Boolean);
 procedure Panic(const cond: Boolean; const Format: AnsiString; const Args: array of PtrUInt);
 procedure UpdateLastIrq;
 procedure SysSetCoreIdle;
+function GetCPU: PCPU; inline;
 
 var
   CPU: array[0..MAX_CPU-1] of TCPU;
@@ -121,7 +120,7 @@ var
 
 implementation
 
-uses 
+uses
   Console, Memory, lnfodwrfToro;
 
 {$MACRO ON}
@@ -130,18 +129,12 @@ uses
 {$DEFINE RestoreInt := asm popf;end;}
 {$DEFINE GetRBP := asm mov rbp_reg, rbp;end;}
 {$DEFINE StoreRBP := asm mov rbp, rbp_reg;end;}
+// only save/restore nonvolatile registers
 {$DEFINE SaveContext:=
  asm
-  push rax
   push rbx
-  push rcx
-  push rdx
   push rdi
   push rsi
-  push r8
-  push r9
-  push r10
-  push r11
   push r12
   push r13
   push r14
@@ -153,16 +146,9 @@ asm
  pop r14
  pop r13
  pop r12
- pop r11
- pop r10
- pop r9
- pop r8
  pop rsi
  pop rdi
- pop rdx
- pop rcx
  pop rbx
- pop rax
 end;}
 
 const
@@ -173,6 +159,8 @@ const
   THREADVAR_BLOCKSIZE: DWORD = 0;
   // this value should be longer than any timer
   WAIT_IDLE_CORE_MS = 2000;
+  PERCPUCURRENTHREAD = 1;
+  PERCPUCURRENTCPU = 2;
 
 procedure SystemExit; forward;
 procedure Scheduling(Candidate: PThread); forward;
@@ -211,7 +199,7 @@ end;
 
 procedure UpdateLastIrq;
 begin
-  CPU[GetApicId].LastIrq := read_rdtsc;
+  GetCPU.LastIrq := read_rdtsc;
 end;
 
 type
@@ -245,8 +233,8 @@ begin
     mov rflags_reg, rax
     mov rbp, rbp_reg
   end;
-  WriteConsoleF('[\t] CPU#%d Exception: /RDivision by zero/n\n',[GetApicid]);
-  WriteConsoleF('Thread#%d registers:\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+  WriteConsoleF('[\t] CPU#%d Exception: Division by zero\n',[GetCoreId]);
+  WriteConsoleF('Thread#%d registers:\n',[GetCurrentThread.ThreadID]);
   WriteConsoleF('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
   WriteConsoleF('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
   WriteConsoleF('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
@@ -313,8 +301,8 @@ begin
     mov rflags_reg, rax
     mov rbp, rbp_reg
   end;
-  WriteConsoleF('[\t] CPU#%d Exception: /ROverflow/n\n',[GetApicid]);
-  WriteConsoleF('Thread#%d registers dump:\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+  WriteConsoleF('[\t] CPU#%d Exception: Overflow\n',[GetCoreId]);
+  WriteConsoleF('Thread#%d registers dump:\n',[GetCurrentThread.ThreadID]);
   WriteConsoleF('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
   WriteConsoleF('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
   WriteConsoleF('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
@@ -368,8 +356,8 @@ begin
     mov rflags_reg, rax
     mov rbp, rbp_reg
   end;
-  WriteConsoleF('[\t] CPU#%d Exception: /RBound instrucction/n\n',[GetApicid]);
-  WriteConsoleF('Thread#%d registers dump:\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+  WriteConsoleF('[\t] CPU#%d Exception: Bound instrucction\n',[GetCoreId]);
+  WriteConsoleF('Thread#%d registers dump:\n',[GetCurrentThread.ThreadID]);
   WriteConsoleF('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
   WriteConsoleF('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
   WriteConsoleF('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
@@ -423,8 +411,8 @@ begin
     mov rflags_reg, rax
     mov rbp, rbp_reg
   end;
-  WriteConsoleF('[\t] CPU#%d Exception: /RIllegal instrucction/n\n',[GetApicid]);
-  WriteConsoleF('Thread#%d registers dump:\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+  WriteConsoleF('[\t] CPU#%d Exception: Illegal instrucction\n',[GetCoreId]);
+  WriteConsoleF('Thread#%d registers dump:\n',[GetCurrentThread.ThreadID]);
   WriteConsoleF('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
   WriteConsoleF('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
   WriteConsoleF('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
@@ -478,8 +466,8 @@ begin
     mov rflags_reg, rax
     mov rbp, rbp_reg
   end;
-  WriteConsoleF('[\t] CPU#%d Exception: /RDevice not available/n\n',[GetApicid]);
-  WriteConsoleF('Thread#%d registers dump:\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+  WriteConsoleF('[\t] CPU#%d Exception: Device not available\n',[GetCoreId]);
+  WriteConsoleF('Thread#%d registers dump:\n',[GetCurrentThread.ThreadID]);
   WriteConsoleF('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
   WriteConsoleF('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
   WriteConsoleF('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
@@ -533,8 +521,8 @@ begin
     mov rflags_reg, rax
     mov rbp, rbp_reg
   end;
-  WriteConsoleF('[\t] CPU#%d Exception: /RDouble fault/n\n',[GetApicid]);
-  WriteConsoleF('Thread#%d registers dump:\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+  WriteConsoleF('[\t] CPU#%d Exception: Double fault\n',[GetCoreId]);
+  WriteConsoleF('Thread#%d registers dump:\n',[GetCurrentThread.ThreadID]);
   WriteConsoleF('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
   WriteConsoleF('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
   WriteConsoleF('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
@@ -588,8 +576,8 @@ begin
     mov rflags_reg, rax
     mov rbp, rbp_reg
   end;
-  WriteConsoleF('[\t] CPU#%d Exception: /RStack fault/n\n',[GetApicid]);
-  WriteConsoleF('Thread#%d registers dump:\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+  WriteConsoleF('[\t] CPU#%d Exception: Stack fault\n',[GetCoreId]);
+  WriteConsoleF('Thread#%d registers dump:\n',[GetCurrentThread.ThreadID]);
   WriteConsoleF('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
   WriteConsoleF('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
   WriteConsoleF('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
@@ -643,8 +631,8 @@ begin
     mov rflags_reg, rax
     mov rbp, rbp_reg
   end;
-  WriteConsoleF('[\t] CPU#%d Exception: /RGeneral protection fault/n\n',[GetApicid]);
-  WriteConsoleF('Thread#%d registers dump:\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+  WriteConsoleF('[\t] CPU#%d Exception: General protection fault\n',[GetCoreId]);
+  WriteConsoleF('Thread#%d registers dump:\n',[GetCurrentThread.ThreadID]);
   WriteConsoleF('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
   WriteConsoleF('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
   WriteConsoleF('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
@@ -705,8 +693,8 @@ begin
     mov rax, cr2
     mov rcr2, rax
   end;
-  WriteConsoleF('[\t] CPU#%d Exception: /RPage Fault/n, cr2: %h\n',[GetApicid, rcr2]);
-  WriteConsoleF('Dumping ThreadID: %d\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+  WriteConsoleF('[\t] CPU#%d Exception: Page Fault, cr2: %h\n',[GetCoreId, rcr2]);
+  WriteConsoleF('Dumping ThreadID: %d\n',[GetCurrentThread.ThreadID]);
   WriteConsoleF('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
   WriteConsoleF('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
   WriteConsoleF('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
@@ -763,14 +751,14 @@ begin
     mov rflags_reg, rax
     mov rbp, rbp_reg
   end;
-  WriteConsoleF('[\t] CPU#%d Exception: /RFPU error/n\n',[GetApicid]);
-  WriteConsoleF('Thread#%d registers dump:\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+  WriteConsoleF('[\t] CPU#%d Exception: FPU error\n',[GetCoreId]);
+  WriteConsoleF('Thread#%d registers dump:\n',[GetCurrentThread.ThreadID]);
   WriteConsoleF('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
   WriteConsoleF('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
   WriteConsoleF('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
   {$IFDEF DebugCrash}
     WriteDebug('Exception: FPU error\n',[]);
-    WriteDebug('Thread#%d registers dump:\n',[CPU[GetApicid].CurrentThread.ThreadID]);
+    WriteDebug('Thread#%d registers dump:\n',[GetCurrentThread.ThreadID]);
     WriteDebug('rax: %h, rbx: %h,      rcx: %h\n',[rax_reg, rbx_reg, rcx_reg]);
     WriteDebug('rdx: %h, rbp: %h,  errcode: %h\n',[rdx_reg, rbp_reg, errc_reg]);
     WriteDebug('rsp: %h, rip: %h,   rflags: %h\n',[rsp_reg, rip_reg, rflags_reg]);
@@ -787,7 +775,6 @@ begin
   raise EFPUException.Create ('FPU');
 end;
 
-
 procedure InitializeExceptions;
 begin
   CaptureInt(EXC_DIVBYZERO, @ExceptDIVBYZERO);
@@ -803,12 +790,19 @@ begin
   CaptureInt(EXC_FPUE, @ExceptFPUE);
 end;
 
+procedure InitPerCPUProcessVar; forward;
+
+procedure InitLocalData;
+begin
+  InitPerCPUProcessVar;
+  Scheduling(nil);
+end;
+
 procedure InitCores;
 var
   I, J: LongInt;
   Attemps: Longint;
 begin
-  WriteConsoleF('Multicore Initialization ...\n',[]);
   for I := 0 to Max_CPU-1 do
   begin
     CPU[I].ApicID := 0 ;
@@ -823,7 +817,7 @@ begin
   end;
   if CPU_COUNT = 1 then
   begin
-    WriteConsoleF('Core#0 ... /VRunning\n/n',[]);
+    WriteConsoleF('Core#0 ... Running\n',[]);
     Exit;
   end;
   for I := 0 to CPU_COUNT-1 do
@@ -831,23 +825,23 @@ begin
     if not Cores[I].CPUBoot and Cores[I].present then
     begin
       CPU[Cores[I].ApicID].ApicID := Cores[I].ApicID;
-      Cores[I].InitProc := @Scheduling;
+      Cores[I].InitProc := @InitLocalData;
       for Attemps:= 0 to 1 do
       begin
         if not InitCore(Cores[I].ApicID) then
         begin
-          WriteConsoleF('Core#%d ... /RHardware Issue\n/n', [Cores[I].ApicID]);
+          WriteConsoleF('Core#%d ... Hardware Issue\n', [Cores[I].ApicID]);
           break;
         end;
         if Cores[I].InitConfirmation then
          break;
       end;
       if Cores[I].InitConfirmation then
-        WriteConsoleF('Core#%d ... /VUp\n/n', [Cores[I].ApicID])
+        WriteConsoleF('Core#%d ... Up\n', [Cores[I].ApicID])
       else
-        WriteConsoleF('Core#%d ... /RDown\n/n', [Cores[I].ApicID]);
+        WriteConsoleF('Core#%d ... Down\n', [Cores[I].ApicID]);
     end else if Cores[I].CPUBoot then
-      WriteConsoleF('Core#0 ... /VUp\n/n',[]);
+      WriteConsoleF('Core#0 ... Up\n',[]);
   end;
 end;
 
@@ -892,18 +886,24 @@ var
   FirstMsg: PThreadCreateMsg;
   CurrentCPU: PCPU;
 begin
-  CurrentCPU := @CPU[GetApicID];
+  CurrentCPU := GetCPU;
   ApicID := Msg.CPU.ApicID;
   FirstMsg := CurrentCPU.MsgsToBeDispatched[ApicID];
   Msg.Next := FirstMsg;
   CurrentCPU.MsgsToBeDispatched[ApicID] := Msg;
-  if CPU[ApicID].Idle then
-    send_apic_int(ApicID, INTER_CORE_IRQ);
 end;
 
-function GetCurrentThread: PThread;
+function GetCurrentThread: PThread; inline;
+var
+  th: ^PThread;
 begin
-  Result := CPU[GetApicID].CurrentThread;
+  th := Pointer(GetGSOffset(PERCPUCURRENTHREAD * sizeof(QWORD)));
+  Result := th^;
+end;
+
+function GetCPU: PCPU; inline;
+begin
+  Result := Pointer(GetGSOffset(PERCPUCURRENTCPU * sizeof(QWORD)));
 end;
 
 const
@@ -913,9 +913,9 @@ function ThreadCreate(const StackSize: SizeUInt; CPUID: DWORD; ThreadFunction: T
 var
   NewThread, Current: PThread;
   NewThreadMsg: TThreadCreateMsg;
-  ip_ret: ^THandle;
+  ip_ret: ^QWORD;
 begin
-  if CPUID = GetApicID then
+  if CPUID = GetCoreId then
   begin
     NewThread := ToroGetMem(SizeOf(TThread));
     if NewThread = nil then
@@ -959,7 +959,7 @@ begin
     {$IFDEF DebugProcess} WriteDebug('ThreadCreate: NewThread.ThreadFunc: %h\n', [PtrUInt(@NewThread.ThreadFunc)]); {$ENDIF}
     NewThread.PrivateHeap := XHeapAcquire(CPUID);
     NewThread.ThreadID := TThreadID(NewThread);
-    NewThread.CPU := @CPU[CPUID];
+    NewThread.CPU := GetCPU;
     NewThread.Parent :=  GetCurrentThread;
     ip_ret := NewThread.ret_thread_sp;
     Dec(ip_ret);
@@ -1026,7 +1026,7 @@ var
   Thread: PThread;
 begin
   Thread := PThread(ThreadID);
-  CurrentThread := CPU[GetApicID].CurrentThread;
+  CurrentThread := GetCurrentThread;
   if CurrentThread = nil then
   begin
     Result := 0;
@@ -1043,7 +1043,7 @@ var
   Thread: PThread;
 begin
   Thread := PThread(ThreadID);
-  CurrentThread := CPU[GetApicID].CurrentThread;
+  CurrentThread := GetCurrentThread;
   if CurrentThread = nil then
   begin
     Result := 0;
@@ -1065,7 +1065,7 @@ var
   Thread: PThread;
 begin
   Thread := PThread(ThreadID);
-  CurrentThread := CPU[GetApicID].CurrentThread;
+  CurrentThread := GetCurrentThread;
   if CurrentThread = nil then
   begin
     Result := 0;
@@ -1089,15 +1089,6 @@ begin
       begin
         RemoteMsgs.RemoteResult := ThreadCreate(RemoteMsgs.StackSize, CurrentCPU.ApicID, RemoteMsgs.ThreadFunc, RemoteMsgs.StartArg);
         RemoteMsgs.Parent.state := tsReady;
-        if CPU[RemoteCpuID].Idle then
-        begin
-          send_apic_int(RemoteCpuID, INTER_CORE_IRQ);
-        end else
-        begin
-          Delay(100);
-          if CPU[RemoteCpuID].Idle then
-            send_apic_int(RemoteCpuID, INTER_CORE_IRQ);
-        end;
         RemoteMsgs := RemoteMsgs.Next;
       end;
       CpuMxSlots[CurrentCPU.ApicID][RemoteCpuID] := nil;
@@ -1116,8 +1107,6 @@ begin
     begin
       CpuMxSlots[RemoteCpuID][CurrentCPU.ApicID] := CurrentCPU.MsgsToBeDispatched[RemoteCpuID];
       CurrentCPU.MsgsToBeDispatched[RemoteCpuID] := nil;
-      if CPU[RemoteCpuID].Idle then
-        send_apic_int(RemoteCpuID, INTER_CORE_IRQ);
       {$IFDEF DebugProcessEmigrating} WriteDebug('Emigrating - Switch Threads of DispatchArray[%d] to EmigrateArray[%d]\n', [CurrentCPU.ApicID, RemoteCpuID]); {$ENDIF}
     end;
   end;
@@ -1128,11 +1117,9 @@ procedure Scheduling(Candidate: PThread); {$IFDEF FPC} [public , alias :'schedul
 var
   CurrentCPU: PCPU;
   CurrentThread, LastThread, Th, tmp: PThread;
-  NextTurnHalt: Boolean;
   rbp_reg: pointer;
 begin
-  NextTurnHalt:= False;
-  CurrentCPU := @CPU[GetApicID];
+  CurrentCPU := GetCPU;
   while True do
   begin
     if CurrentCPU.Threads = nil then
@@ -1140,9 +1127,6 @@ begin
       {$IFDEF DebugProcess} WriteDebug('Scheduling: scheduler goes to inmigration loop\n', []); {$ENDIF}
       while CurrentCPU.Threads = nil do
       begin
-        CurrentCPU.Idle := True;
-        hlt;
-        CurrentCPU.Idle := False;
         Inmigrating(CurrentCPU);
       end;
       CurrentCPU.CurrentThread := CurrentCPU.Threads;
@@ -1172,7 +1156,9 @@ begin
       end else
         Candidate := Candidate.Next;
     until Candidate = LastThread;
-    {$IFDEF DebugProcess} WriteDebug('Scheduling: Candidate state: %d, PollingThreadCount: %d, PollingThreadTotal: %d\n', [Candidate.state, CurrentCPU.PollingThreadCount, CurrentCPU.PollingThreadTotal]); {$ENDIF}
+    {$IFDEF DebugProcess} WriteDebug('Scheduling: Candidate state: %d\n', [Candidate.state]); {$ENDIF}
+    if Candidate.state <> tsReady then
+      Continue;
     CurrentCPU.CurrentThread := Candidate;
     {$IFDEF DebugProcess} WriteDebug('Scheduling: thread %h, state: %d, stack: %h\n', [PtrUInt(Candidate), Candidate.State, PtrUInt(Candidate.ret_thread_sp)]); {$ENDIF}
     if Candidate = CurrentThread then
@@ -1201,13 +1187,10 @@ begin
 end;
 
 procedure SysAllocateThreadVars;
-var
-  CpuID: Byte;
 begin
-  CpuID := GetApicID;
-  CPU[CpuID].CurrentThread.TLS := ToroGetMem(THREADVAR_BLOCKSIZE) ;
-  Panic(CPU[CpuID].CurrentThread.TLS = nil, 'SysAllocateThreadVars: Out of memory', []);
-  {$IFDEF DebugProcess} WriteDebug('SysAllocateThreadVars - TLS: %h Size: %d\n', [PtrUInt(CPU[CpuID].CurrentThread.TLS), THREADVAR_BLOCKSIZE]); {$ENDIF}
+  GetCurrentThread.TLS := ToroGetMem(THREADVAR_BLOCKSIZE) ;
+  Panic(GetCurrentThread.TLS = nil, 'SysAllocateThreadVars: Out of memory', []);
+  {$IFDEF DebugProcess} WriteDebug('SysAllocateThreadVars - TLS: %h Size: %d\n', [PtrUInt(GetCurrentThread.TLS), THREADVAR_BLOCKSIZE]); {$ENDIF}
 end;
 
 procedure CreateInitThread(ThreadFunction: TThreadFunc; const StackSize: SizeUInt);
@@ -1216,7 +1199,7 @@ var
   LocalCPU: PCPU;
 begin
   {$IFDEF DebugProcess} WriteDebug('CreateInitThread: StackSize: %d\n', [StackSize]); {$ENDIF}
-  LocalCPU := @CPU[GetApicID];
+  LocalCPU := GetCPU;
   InitThread := ThreadCreate(StackSize, LocalCPU.ApicID, ThreadFunction, nil);
   if InitThread = nil then
   begin
@@ -1225,7 +1208,7 @@ begin
   end;
   LocalCPU.CurrentThread := InitThread;
   InitialThreadID := TThreadID(InitThread);
-  WriteConsoleF('Starting MainThread: /V%h/n\n', [InitialThreadID]);
+  WriteConsoleF('Starting MainThread: %h\n', [InitialThreadID]);
   // only performed explicitely for initialization procedure
   {$IFDEF FPC} InitThreadVars(@SysRelocateThreadvar); {$ENDIF}
   // TODO: InitThreadVars for DELPHI
@@ -1240,17 +1223,18 @@ end;
 // Yield the current CPU to the next ready thread
 procedure SysThreadSwitch;
 var
- idletime: Int64;
  tmp: PCPU;
  Thread: PThread;
 begin
   SaveContext;
   Scheduling(nil);
-  if CPU[GetApicID].CurrentThread.FlagKill then
+  //RestoreContext;
+  if GetCurrentThread.FlagKill then
   begin
     {$IFDEF DebugProcess} WriteDebug('Signaling - killing CurrentThread\n', []); {$ENDIF}
     ThreadExit(True);
   end;
+  // Restore at this point otherwise %rdi is not correctly restored
   RestoreContext;
 end;
 
@@ -1276,7 +1260,7 @@ var
   NewThread: PThread;
 begin
   if (LongInt(CPU) = CPU_NIL) then
-    CPU := GetApicID
+    CPU := GetCoreId
   else if (LongInt(CPU) > CPU_COUNT-1) or (not Cores[Longint(CPU)].InitConfirmation) then
   begin
     ThreadID := 0;
@@ -1308,7 +1292,7 @@ end;
 
 function SysGetCurrentThreadID: TThreadID;
 begin
-  Result := CPU[GetApicID].CurrentThread.ThreadID;
+  Result := GetCurrentThread.ThreadID;
 end;
 
 procedure SystemExit; [public, alias : 'SYSTEMEXIT'];
@@ -1334,7 +1318,7 @@ begin
   if not cond then
     Exit;
   DisableInt;
-  WriteConsoleF('/RPanic/n:\n',[]);
+  WriteConsoleF('Panic:\n',[]);
   WriteConsoleF(Format, Args);
   {$IFDEF DebugProcess} WriteDebug('Panic: ', []); WriteDebug(Format, Args); {$ENDIF}
   {$IFDEF DebugCrash}
@@ -1354,10 +1338,34 @@ end;
 // otherwise call the scheduler
 procedure SysSetCoreIdle;
 begin
-  If (read_rdtsc - CPU[GetApicId].LastIrq) > (LocalCpuSpeed * 1000)* WAIT_IDLE_CORE_MS then
+  // TODO: Set the core idle in the table
+  If (read_rdtsc - GetCPU.LastIrq) > (LocalCpuSpeed * 1000)* WAIT_IDLE_CORE_MS then
     hlt
   else
     SysThreadSwitch;
+end;
+
+// TODO: critical sections are important when using objpascal in multicore
+procedure SysInitCriticalSection(var cs : TRTLCriticalSection);
+begin
+end;
+
+procedure SysDoneCriticalSection(var cs : TRTLCriticalSection);
+begin
+end;
+
+procedure SysLeaveCriticalSection(var cs : TRTLCriticalSection);
+begin
+end;
+
+procedure SysEnterCriticalSection(var cs : TRTLCriticalSection);
+begin
+end;
+
+procedure InitPerCPUProcessVar;
+begin
+  SetPerCPUVar(PERCPUCURRENTHREAD, PtrUInt(@CPU[GetCoreId].CurrentThread));
+  SetPerCPUVar(PERCPUCURRENTCPU, PtrUInt(@CPU[GetCoreId]));
 end;
 
 procedure ProcessInit;
@@ -1369,6 +1377,7 @@ begin
   {$ENDIF}
   if HasException then
     InitializeExceptions;
+  InitPerCPUProcessVar;
   InitCores;
   ShutdownProcedure := nil;
   {$IFDEF EnableDebug}
@@ -1389,10 +1398,10 @@ begin
     ThreadSetPriority      := nil;
     ThreadGetPriority      := nil;
     GetCurrentThreadId     := @SysGetCurrentThreadID;
-    InitCriticalSection    := nil;
-    DoneCriticalSection    := nil;
-    EnterCriticalSection   := nil;
-    LeaveCriticalSection   := nil;
+    InitCriticalSection    := @SysInitCriticalSection;
+    DoneCriticalSection    := @SysDoneCriticalSection;
+    EnterCriticalSection   := @SysEnterCriticalSection;
+    LeaveCriticalSection   := @SysLeaveCriticalSection;
     InitThreadVar          := @SysInitThreadVar;
     RelocateThreadVar      := @SysRelocateThreadVar;
     AllocateThreadVars     := @SysAllocateThreadVars;
