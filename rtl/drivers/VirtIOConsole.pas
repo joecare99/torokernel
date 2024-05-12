@@ -91,14 +91,9 @@ begin
   Inc(vq.last_used_index);
   VirtIOAddBuffer(VirtIOConsoleDev.Base, vq, @bi, 1);
 
+  // wait until device consumes the buffer
   while (vq.last_used_index <> vq.used.index) do;
 
-  index := vq.last_used_index;
-  norm_index := index mod vq.queue_size;
-  buffer_index := vq.used.rings[norm_index].index;
-  tmp := Pointer(PtrUInt(vq.buffers) + buffer_index * sizeof(TQueueBuffer));
-  // mark buffer as free
-  tmp.length:= 0;
   Inc(vq.free_nr_desc);
   WriteLockConsole := 3;
 end;
@@ -136,15 +131,10 @@ begin
       PacketSize := vq.used.rings[index].length;
       if CurrentPacket <> nil then
         ToroFreeMem(CurrentPacket);
-      Packet := ToroGetMem(PacketSize+SizeOf(TPacket));
+      Packet := AllocatePacket(PacketSize);
 
-      if (Packet <> nil) then
+      if Packet <> nil then
       begin
-        Packet.data:= Pointer(PtrUInt(Packet) + SizeOf(TPacket));
-        Packet.size:= PacketSize;
-        Packet.Delete:= False;
-        Packet.Ready:= False;
-        Packet.Next:= nil;
         Data := Packet.data;
         for I := 0 to PacketSize-1 do
           Data^[I] := P^[I];
@@ -188,13 +178,13 @@ begin
 
   if not VirtIOInitQueue(VirtIOConsoleDev.Base, RX_QUEUE, @VirtIOConsoleDev.VirtQueues[RX_QUEUE], QUEUE_LEN, VIRTIO_CONSOLE_MAX_PKT_BUF_SIZE) then
   begin
-    WriteConsoleF('VirtIOConsole: RX_QUEUE has not been initializated\n', []);
+    WriteConsoleF('VirtIOConsole: RX_QUEUE has not been initialized\n', []);
     Exit;
   end;
 
   if not VirtIOInitQueue(VirtIOConsoleDev.Base, TX_QUEUE, @VirtIOConsoleDev.VirtQueues[TX_QUEUE], QUEUE_LEN, 0) then
   begin
-    WriteConsoleF('VirtIOConsole: TX_QUEUE has not been initializated\n', []);
+    WriteConsoleF('VirtIOConsole: TX_QUEUE has not been initialized\n', []);
     Exit;
   end;
 
@@ -203,8 +193,8 @@ begin
   VirtIOConsoleDev.VirtQueues[TX_QUEUE].available.flags := 1;
 
   tx := @VirtIOConsoleDev.VirtQueues[TX_QUEUE];
-  tx.buffer := ToroGetMem(VIRTIO_CONSOLE_MAX_PKT_BUF_SIZE * tx.queue_size + PAGE_SIZE);
-  tx.buffer := Pointer(PtrUInt(tx.buffer) + (PAGE_SIZE - PtrUInt(tx.buffer) mod PAGE_SIZE));
+  tx.buffer := ToroGetMem(VIRTIO_CONSOLE_MAX_PKT_BUF_SIZE * tx.queue_size);
+  tx.buffer := Pointer(PtrUInt(tx.buffer));
   tx.chunk_size := VIRTIO_CONSOLE_MAX_PKT_BUF_SIZE;
 
   Device.Vqs := @VirtIOConsoleDev.VirtQueues[RX_QUEUE];

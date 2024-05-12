@@ -3,7 +3,7 @@
 //
 // This units contains the the code that is platform-dependent.
 //
-// Copyright (c) 2003-2020 Matias Vara <matiasevara@gmail.com>
+// Copyright (c) 2003-2022 Matias Vara <matiasevara@torokernel.io>
 // All Rights Reserved
 //
 // This program is free software: you can redistribute it and/or modify
@@ -49,6 +49,9 @@ const
 
   PERCPUAPICID = 0;
 
+  // Lenght of the cacheline in qwords
+  CACHELINE_LEN = 8;
+
 type
 {$IFDEF UNICODE}
   XChar = AnsiChar;
@@ -87,12 +90,14 @@ type
   end;
   PMemoryRegion = ^TMemoryRegion;
 
-  TCore = record
+  TPerCPUCore = record
     ApicID: LongInt;
     Present: Boolean;
     CPUBoot: Boolean;
     InitConfirmation: Boolean;
+    pad0: Byte;
     InitProc: procedure;
+    pad1: array[1..CACHELINE_LEN-2] of QWORD;
   end;
 
 // Utils
@@ -114,7 +119,7 @@ function is_apic_ready: Boolean ;
 procedure NOP;
 function read_portb(port: Word): Byte;
 procedure read_portd(Data: Pointer; Port: Word);
-function read_rdtsc: Int64;
+function read_rdtsc: QWORD;
 procedure send_apic_init (apicid : Byte) ;
 procedure send_apic_startup (apicid , vector : Byte );
 function SpinLock(CmpVal, NewVal: UInt64; var addval: UInt64): UInt64; assembler;
@@ -128,6 +133,7 @@ procedure ArchInit;
 procedure Now (Data: PNow);
 procedure Interruption_Ignore;
 function GetMemoryRegion (ID: LongInt ; Buffer : PMemoryRegion): LongInt;
+function GetNextUsableMemoryRegion(Curr: LongInt): LongInt;
 function InitCore(ApicID: Byte): Boolean;
 procedure SetPageCache(Add: Pointer);
 procedure RemovePageCache(Add: Pointer);
@@ -148,13 +154,14 @@ function GetKernelParam(I: LongInt): Pchar;
 function read_ioapic_reg(offset: dword): dword;
 procedure write_ioapic_reg(offset, val: dword);
 function find_msb_set(value: DWORD): LongInt; assembler;
+function GetStealCPU: QWORD;
 
 const
   MP_START_ADD = $e0000;
   RESET_VECTOR = $467; // when the IPI occurs the procesor jumps here
   cpu_type = 0;
   apic_type = 2;
-  MAX_CPU = 8;  // Number of max CPU support
+  MAX_CPU = 16;  // Number of max CPU support
   ALLOC_MEMORY_START = $800000; // Address Start of Alloc Memory
   KERNEL_IMAGE_START = $400000;
   PAGE_SIZE = 2*1024*1024; // 2 MB per Page
@@ -167,18 +174,24 @@ const
   PVH_CMDLINE_PADDR = 24;
   BASE_IRQ = 32;
   MAX_ADDR_MEM = 512*1024*1014*1014;
+  // The value of MAX_PERCPU_VAR shall be CACHELINE_LEN aligned
+  MAX_PERCPU_VAR = CACHELINE_LEN * 2;
 
 var
   CPU_COUNT: LongInt;
   AvailableMemory: QWord;
   LocalCpuSpeed: Int64 = 0; // LocalCpuSpeed has the speed of the local CPU in Mhz
   StartTime: TNow;
-  Cores: array[0..MAX_CPU-1] of TCore;
+  Cores: array[0..MAX_CPU-1] of TPerCPUCore;
   LargestMonitorLine: longint;
   SmallestMonitorLine: longint;
   KernelParam: Pchar = Nil;
   KernelParamEnd: Pchar = Nil;
   KernelParamCount: LongInt = 0;
+{$push}
+{$codealign varmin=64}
+  PerCPUVar: array[0..MAX_CPU-1] of array[0..MAX_PERCPU_VAR-1] of QWORD;
+{$pop}
 
 implementation
 
@@ -209,7 +222,7 @@ const
 
   // Address of Page Directory
   PDADD = $100000;
-  Kernel_Param = $200000;
+  KERNEL_PARAM = $200000;
   IDTADDRESS = $3080;
   GDTADDRESS = $3000;
 
@@ -220,6 +233,17 @@ const
 
   MSR_KVM_SYSTEM_TIME_NEW = $4b564d01;
   MSR_KVM_WALL_CLOCK_NEW =  $4b564d00;
+  MSR_KVM_STEAL_TIME = $4b564d03;
+
+  // Bootloader signatures
+  SIG_PVH = 1;
+  SIG_K64 = 2;
+  SIG_BARE = 3;
+
+  // first descriptor after Null, CS, DS, CS64
+  FIRST_DESCRIPTOR = 4;
+
+  BOOT_CMDLINE_OFFSET : array[1..3] of LongInt = (PVH_CMDLINE_PADDR, $1f1 + 55, 0);
 
 type
   p_apicid_register = ^apicid_register ;
@@ -318,8 +342,21 @@ type
     pad: array[0..1] of BYTE;
   end;
 
+  PKVMStealTime = ^TKVMStealTime;
+  TKVMStealTime = packed record
+      steal: QWORD;
+      version: DWORD;
+      flags: DWORD;
+      preempted: Byte;
+      u8_pad: array[0..2] of Byte;
+      pad: array[0..10] of DWORD;
+  end;
+
 
 function GetApicId: Byte; forward;
+
+var
+  ToroStealClocks: array[0..MAX_CPU-1] of TKVMStealTime;
 
 procedure InttoStr(Value: PtrUInt; buff: PXChar);
 var
@@ -381,6 +418,8 @@ var
   idt_gates: PInterruptGateArray; // Pointer to IDT
   // pointer to start of the day structure
   sodpointer: Pointer;
+  // bootloader signature
+  bootsig: LongInt;
   ToroClock: TWallClock;
 
 procedure CaptureInt(int: Byte; Handler: Pointer);
@@ -393,12 +432,6 @@ begin
   idt_gates^[int].res := 0;
   idt_gates^[int].nu := 0;
 end;
-
-const
-  MAX_PERCPU_VAR = 10;
-
-var
-  PerCPUVar: array[0..MAX_CPU-1] of array[0..MAX_PERCPU_VAR-1] of QWORD;
 
 procedure LoadGs(Des: Longint); assembler;
 asm
@@ -415,7 +448,7 @@ begin
   CoreId := GetApicId;
   PerCPUVar[CoreId][PERCPUAPICID] := CoreId;
   base := @PerCPUVar[CoreId][PERCPUAPICID];
-  sel := sizeof(TDescriptor) * (CoreId + 5);
+  sel := sizeof(TDescriptor) * (CoreId + FIRST_DESCRIPTOR);
   gdt_p := Pointer(GDTADDRESS + sel);
   gdt_p.limit_0_15 := $ffff;
   gdt_p.base_0_15 := DWORD(PtrUInt(base)) and $ffff;
@@ -546,7 +579,6 @@ var
 begin
   tmp := Pointer(eoi_reg);
   tmp^ := 0;
-  Delay(10);
 end;
 
 procedure write_ioapic_reg(offset, val: dword);
@@ -810,18 +842,17 @@ begin
   end;
 end;
 
-function read_rdtsc: Int64;
+function read_rdtsc: QWORD;
 var
   l, h: QWORD;
 begin
+  // TODO: to check why using eax does not work
   asm
-    xor rax, rax
-    xor rdx, rdx
     rdtsc
     mov l, rax
     mov h, rdx
   end ['RAX', 'RDX'];
-  Result := QWORD(h shl 32) or l;
+  Result := QWORD(h shl 32) or (l and $ffffffff);
 end;
 
 function bit_test(Val: Pointer; pos: QWord): Boolean;
@@ -887,36 +918,73 @@ type
     res: dword;
   end;
 
+  PBoote820Entry = ^TBoote820Entry;
+  TBoote820Entry = packed record
+    Addr: QWord;
+    Size: QWord;
+    tp: Dword;
+  end;
+
 const
   INT15H_TABLE = $30000;
 
 var
-  CounterID: LongInt; // starts with CounterID = 1
+  CounterID: LongInt;
 
 function GetMemoryRegion(ID: LongInt; Buffer: PMemoryRegion): LongInt;
 var
   Desc: PInt15h_info;
   DescMB: PPVHentry;
+  DescMBe820: PBoote820Entry;
   mbp: ^QWORD;
 begin
-  if ID > CounterID then
-    Result := 0
+  Result := 0;
+  if ID >= CounterID then
+    Exit
   else
     Result := SizeOf(TMemoryRegion);
-  if sodpointer = nil then
+  case bootsig of
+    SIG_BARE:
+      begin
+        Desc := Pointer(INT15H_TABLE + SizeOf(Int15h_info) * ID);
+        Buffer.Base := Desc.Base;
+        Buffer.Length := Desc.Length;
+        Buffer.Flag := Desc.tipe;
+      end;
+    SIG_PVH:
+      begin
+        mbp := Pointer(sodpointer + PVH_MEMMAP_PADDR);
+        DescMB := Pointer(PtrUInt(mbp^));
+        Inc(DescMB, ID);
+        Buffer.Base := DescMB.Addr;
+        Buffer.Length := DescMB.Size;
+        Buffer.Flag := DescMB.Tp;
+      end;
+    SIG_K64:
+      begin
+        DescMBe820 := Pointer(sodpointer + $2d0);
+        Inc(DescMBe820, ID);
+        Buffer.Base := DescMBe820.Addr;
+        Buffer.Length := DescMBe820.Size;
+        Buffer.Flag := DescMBe820.Tp;
+      end;
+  end;
+end;
+
+function GetNextUsableMemoryRegion(Curr: LongInt): LongInt;
+var
+  tmp: TMemoryRegion;
+begin
+  Result := 0;
+  Inc(Curr);
+  While GetMemoryRegion(Curr, @tmp) <> 0 do
   begin
-    Desc := Pointer(INT15H_TABLE + SizeOf(Int15h_info) * (ID-1));
-    Buffer.Base := Desc.Base;
-    Buffer.Length := Desc.Length;
-    Buffer.Flag := Desc.tipe;
-  end
-  else begin
-    mbp := Pointer(sodpointer + PVH_MEMMAP_PADDR);
-    DescMB := Pointer(PtrUInt(mbp^));
-    Inc(DescMB, ID-1);
-    Buffer.Base := DescMB.Addr;
-    Buffer.Length := DescMB.Size;
-    Buffer.Flag := DescMB.Tp;
+    if tmp.Flag = MEM_AVAILABLE Then
+    begin
+      Result := Curr;
+      Exit;
+    end;
+    Inc(Curr);
   end;
 end;
 
@@ -927,42 +995,61 @@ const
 procedure MemoryCounterInit;
 var
   Magic: ^DWORD;
-  maplen, mapaddr: ^QWORD;
+  mapaddr: ^QWORD;
+  maplen: ^Byte;
   Desc: PInt15h_info;
-  DescMB: PPVHentry;
+  DescPVH: PPVHentry;
+  DescE820: PBoote820Entry;
   Count: DWORD;
 begin
   CounterID := 0;
   AvailableMemory := 0;
-  if sodpointer = nil then
-  begin
-    Magic := Pointer(INT15H_TABLE);
-    Desc := Pointer(INT15H_TABLE);
-    while Magic^ <> $1234 do
-    begin
-      if (Desc.tipe = 1) and (Desc.Base >= $100000) then
-        AvailableMemory := AvailableMemory + Desc.Length;
-      Inc(Magic);
-      Inc(Desc);
-    end;
-    AvailableMemory := AvailableMemory;
-    CounterID := (QWord(Magic)-INT15H_TABLE);
-    CounterID := CounterID div SizeOf(Int15h_info);
-  end else
-  begin
-    maplen := sodpointer + PVH_MEMMAP_ENTRIES;
-    mapaddr := sodpointer + PVH_MEMMAP_PADDR;
-    DescMB := Pointer(PtrUInt(mapaddr^));
-    Count := maplen^;
-    while count <> 0 do
-    begin
-      if (DescMB.tp = E820_TYPE_RAM) and (DescMB.addr >= $100000) then
-        AvailableMemory := AvailableMemory + DescMB.Size;
-      Inc(DescMB);
-      Inc(CounterID);
-      Dec(Count, 1);
-    end;
-  end;
+   case bootsig of
+    SIG_BARE:
+      begin
+        Magic := Pointer(INT15H_TABLE);
+        Desc := Pointer(INT15H_TABLE);
+        while Magic^ <> $1234 do
+        begin
+          if (Desc.tipe = 1) and (Desc.Base >= $100000) then
+            AvailableMemory := AvailableMemory + Desc.Length;
+          Inc(Magic);
+          Inc(Desc);
+        end;
+        AvailableMemory := AvailableMemory;
+        CounterID := (QWord(Magic)-INT15H_TABLE);
+        CounterID := CounterID div SizeOf(Int15h_info);
+      end;
+    SIG_PVH:
+      begin
+        maplen := sodpointer + PVH_MEMMAP_ENTRIES;
+        mapaddr := sodpointer + PVH_MEMMAP_PADDR;
+        DescPVH := Pointer(PtrUInt(mapaddr^));
+        Count := maplen^;
+        while count <> 0 do
+        begin
+          if (DescPVH.tp = E820_TYPE_RAM) and (DescPVH.addr >= $100000) then
+            AvailableMemory := AvailableMemory + DescPVH.Size;
+          Inc(DescPVH);
+          Inc(CounterID);
+          Dec(Count);
+        end;
+      end;
+    SIG_K64:
+      begin
+        maplen := sodpointer + $1e8;
+        DescE820 := Pointer(sodpointer + $2d0);
+        Count := maplen^;
+        while count <> 0 do
+        begin
+          if (DescE820.tp = E820_TYPE_RAM) and (DescE820.addr >= $100000) then
+            AvailableMemory := AvailableMemory + DescE820.Size;
+          Inc(DescE820);
+          Inc(CounterID);
+          Dec(Count);
+        end;
+      end;
+   end;
 end;
 
 procedure Bcd_To_Bin(var val: LongInt); inline;
@@ -983,6 +1070,27 @@ begin
     mov ecx, MSR_KVM_SYSTEM_TIME_NEW
     wrmsr
   end ['EAX', 'EDX', 'ECX'];
+end;
+
+procedure KVMSetStealClock;
+var
+  l, h: DWORD;
+  PClock: PKVMStealTime;
+begin
+  PClock := @ToroStealClocks[GetCoreId];
+  l := (PTrUInt(PClock) and $ffffffff) or 1;
+  h := (PTrUInt(PClock) and $ffffffff00000000) shr 32;
+  asm
+    mov eax, l
+    mov edx, h
+    mov ecx, MSR_KVM_STEAL_TIME
+    wrmsr
+  end ['EAX', 'EDX', 'ECX'];
+end;
+
+function GetStealCPU: QWORD;
+begin
+  Result := ToroStealClocks[GetApicId].steal;
 end;
 
 Type
@@ -1127,12 +1235,10 @@ asm
   mov gs, ax
   mov fs, ax
   mov rsp, esp_tmp
-  mov rax, PDADD
-  {$IFDEF FPC} mov cr3, rax {$ENDIF}
-  {$IFDEF DCC} mov cr3, eax {$ENDIF}
   xor rbp, rbp
   sti
   call SSEInit
+  call KVMSetStealClock
   call boot_confirmation
 end;
 
@@ -1140,12 +1246,12 @@ end;
 // This procedure is executed in parallel by all CPUs when booting
 procedure main; [public, alias: '_mainCRTStartup']; assembler;
 asm
-  mov rax, cr3 // Cannot remove this warning! using eax generates error at compile-time.
-  cmp rax, 90000h  // rax = $100000 when executed the first time from the bootloader (debugged once using FPC version)
+  cmp edx, 1987h
   je InitCpu
   mov rsp, pstack
   xor rbp, rbp
   mov sodpointer, rbx
+  mov bootsig, rcx
   call KernelStart
 end;
 {$ENDIF}
@@ -1185,7 +1291,7 @@ var
   cp: p_mp_processor_entry ;
 begin
   m := Pointer(PtrUInt(table) + SizeOf(mp_table_header));
-  while (m^ = cpu_type) and (CPU_COUNT < MAX_CPU-1) do
+  while (m^ = cpu_type) and (CPU_COUNT < MAX_CPU) do
   begin
     cp := Pointer(m);
     Inc(CPU_COUNT);
@@ -1388,19 +1494,65 @@ asm
   sfence
 end;
 
-function GetKernelParam(I: LongInt): Pchar;
+function GetKernelParam(I: LongInt): PChar;
 var
   tmp: Pchar;
 begin
+  Result := nil;
+  If I >= KernelParamCount then
+    Exit;
+  if I = 0 then
+  begin
+    Result := KernelParam;
+    Exit;
+  end;
+  // only I > 0 cases
   tmp := KernelParam;
-  while (I > 0) do
+  while (I > 0) and (tmp < KernelParamEnd) do
   begin
     if tmp^ = #0 then
       Dec(I);
-    if tmp < KernelParamEnd then
-      Inc(tmp);
+    Inc(tmp);
   end;
   Result := tmp;
+end;
+
+procedure ParseKernelParams;
+var
+  tmp: ^DWORD;
+  Len: LongInt;
+  p: PChar;
+begin
+  tmp := sodpointer + BOOT_CMDLINE_OFFSET[bootsig];
+  p := PChar(PtrUInt(tmp^));
+  KernelParam := Pointer(KERNEL_PARAM);
+  Len := 0;
+  while p^ <> #0 do
+  begin
+    Inc(Len);
+    if (p^ = ',') or (p^ = ' ') then
+    begin
+      // ignore arguments with only spaces
+      if Len = 1 Then
+      begin
+        Len := 0;
+        Inc(p);
+        Continue;
+      end;
+      KernelParam^ := #0;
+      Len := 0;
+      Inc(KernelParamCount)
+    end
+    else
+      KernelParam^ := p^;
+    Inc(KernelParam);
+    Inc(p);
+  end;
+  KernelParam^ := #0;
+  if Len > 0 then
+    Inc(KernelParamCount);
+  KernelParamEnd := KernelParam;
+  KernelParam := Pointer(KERNEL_PARAM);
 end;
 
 procedure EnableNMI;
@@ -1411,35 +1563,13 @@ end;
 
 procedure ArchInit;
 var
-  I: LongInt;
-  tmp: ^QWORD;
-  p: PChar;
+  I, Len: LongInt;
   clk: KVMClock;
 begin
   idt_gates := Pointer(IDTADDRESS);
   FillChar(PChar(IDTADDRESS)^, SizeOf(TInteruptGate)*256, 0);
   InitGS;
-  if sodpointer <> Nil then
-  begin
-    tmp := sodpointer + PVH_CMDLINE_PADDR;
-    p := PChar(PtrUInt(tmp^));
-    KernelParam := Pointer(Kernel_Param);
-    while p^ <> #0 do
-    begin
-      if (p^ = ',') or (p^ = ' ') then
-      begin
-        KernelParam^ := #0;
-        Inc(KernelParamCount)
-      end
-      else
-        KernelParam^ := p^;
-      Inc(KernelParam);
-      Inc(p);
-    end;
-    KernelParam^ := #0;
-    KernelParamEnd := KernelParam;
-    KernelParam := Pointer(Kernel_Param);
-  end;
+  ParseKernelParams;
   MemoryCounterInit;
   PML4_Table := Pointer(PDADD);
   LocalCpuSpeed := PtrUInt(CalculateCpuSpeed);
@@ -1448,6 +1578,8 @@ begin
   CaptureInt(INTER_CORE_IRQ, @Apic_IRQ_Ignore);
   EnableInt;
   KVMInstallClock(@ToroClock);
+  FillChar(PChar(@ToroStealClocks)^, sizeof(ToroStealClocks), 0);
+  KVMSetStealClock;
   KVMGetClock(@clk);
   StartTime.Sec := clk.sec mod 86400;
   StartTime.Min := (StartTime.Sec  div 60) mod 60;

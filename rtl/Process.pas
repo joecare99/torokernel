@@ -33,7 +33,7 @@ uses
 
 type
   PThread = ^TThread;
-  PCPU = ^TCPU;
+  PCPU = ^TPerCPU;
   PThreadCreateMsg = ^TThreadCreateMsg;
   TMxSlot = Pointer;
   // MxSlots[SenderID][ReceiverID] can be assigned only if slot is empty (nil)
@@ -72,11 +72,14 @@ type
     CPU: PCPU;
   end;
 
-  TCPU = record
+  // PerCPU variables require to be padded to CACHELINE_LEN
+  TPerCPU = record
     ApicID: LongInt;
+    pad: LongInt;
     CurrentThread: PThread;
     Threads: PThread;
     LastIRQ: QWORD;
+    pad1: array[1..CACHELINE_LEN-4] of QWORD;
     MsgsToBeDispatched: array[0..MAX_CPU-1] of PThreadCreateMsg;
   end;
 
@@ -108,13 +111,18 @@ function SysSuspendThread(ThreadID: TThreadID): DWORD;
 function SysKillThread(ThreadID: TThreadID): DWORD;
 procedure SysThreadSwitch;
 procedure ThreadExit(Schedule: Boolean);
-procedure Panic(const cond: Boolean; const Format: AnsiString; const Args: array of PtrUInt);
+procedure Panic(const cond: Boolean; const Format: PChar; const Args: array of PtrUInt);
 procedure UpdateLastIrq;
 procedure SysSetCoreIdle;
 function GetCPU: PCPU; inline;
 
+{$push}
+{$codealign varmin=64}
 var
-  CPU: array[0..MAX_CPU-1] of TCPU;
+  CPU: array[0..MAX_CPU-1] of TPerCPU;
+{$pop}
+
+var
   CpuMxSlots: TMxSlots;
   ShutdownProcedure: procedure;
 
@@ -978,8 +986,10 @@ begin
     Current := GetCurrentThread;
     NewThreadMsg.Parent := Current;
     NewThreadMsg.Next := nil;
-    AddThreadMsg(@NewThreadMsg);
+    // Remote core wakes up current thread
+    // once operation is finished
     Current.State := tsSuspended;
+    AddThreadMsg(@NewThreadMsg);
     SysThreadSwitch;
     Result := NewThreadMsg.RemoteResult;
   end;
@@ -1310,7 +1320,7 @@ begin
 end;
 
 // Halt core if a Panic condition is reached
-procedure Panic(const cond: Boolean; const Format: AnsiString; const Args: array of PtrUInt);
+procedure Panic(const cond: Boolean; const Format: PChar; const Args: array of PtrUInt);
 var
  rbp_reg: QWord;
  addr: pointer;
@@ -1369,7 +1379,16 @@ begin
 end;
 
 procedure ProcessInit;
+var
+  j: LongInt;
 begin
+  if KernelParamCount > 0 then
+  begin
+    WriteConsoleF('Kernel Parameters:\n', []);
+    for j:= 0 to KernelParamCount-1 do
+      WriteConsoleF('param[%d]: %p\n', [j, PtrUInt(GetKernelParam(j))]);
+  end;
+  FillChar(CPU, sizeof(CPU), 0);
   Panic(LocalCpuSpeed = 0,'LocalCpuSpeed = 0\n', []);
   {$IFDEF DebugProcess}
     if LocalCpuSpeed = MAX_CPU_SPEED_MHZ then

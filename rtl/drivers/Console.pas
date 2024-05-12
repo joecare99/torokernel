@@ -30,7 +30,7 @@ interface
 uses Arch, Process;
 
 procedure PrintDecimal(Value: PtrUInt);
-procedure WriteConsoleF(const Format: AnsiString; const Args: array of PtrUInt);
+procedure WriteConsoleF(const Format: PChar; const Args: array of PtrUInt);
 procedure ConsoleInit;
 procedure ReadFromSerial(out C: XChar);
 procedure PutCtoSerial(C: XChar);
@@ -59,7 +59,7 @@ procedure PrintString(const S: AnsiString); forward;
 var
   PutC: procedure (C: Char) = PutCtoSerial;
 
-procedure FlushUp;
+procedure FlushUp; [public, alias : 'FlushUp'];
 begin
   PutCtoSerial(XChar(13));
   PutCtoSerial(XChar(10));
@@ -74,7 +74,7 @@ begin
   until (lsr and $20) = $20;
 end;
 
-procedure PutCtoSerial(C: XChar);
+procedure PutCtoSerial(C: XChar); [public, alias : 'PutCtoSerial'];
 begin
   WaitForCompletion;
   write_portb(Byte(C), BASE_COM_PORT);
@@ -98,7 +98,7 @@ begin
 end;
 {$ENDIF}
 
-procedure PrintDecimal(Value: PtrUInt);
+procedure PrintDecimal(Value: PtrUInt); [public, alias : 'PrintDecimal'];
 var
   I, Len: Byte;
   S: string[21]; // 21 is the max number of characters needed to represent 64 bits number in decimal
@@ -125,26 +125,15 @@ begin
   end;
 end;
 
+// print always 16 chars
 procedure PrintHexa(Value: PtrUInt);
 var
   I: Byte;
-  P: Boolean;
 begin
-  P := False;
   PutC('0');
   PutC('x');
-  if (Value = 0) then
-  begin
-    Putc('0');
-    Exit;
-  end;
   for I := SizeOf(PtrUInt)*2-1 downto 0 do
-  begin
-   if not(P) and (HEX_CHAR[(Value shr (I*4)) and $0F] <> '0') then
-     P:= True;
-   if P then
-     PutC(HEX_CHAR[(Value shr (I*4)) and $0F]);
-  end;
+    PutC(HEX_CHAR[(Value shr (I*4)) and $0F]);
 end;
 
 procedure PrintString(const S: AnsiString);
@@ -155,7 +144,7 @@ begin
     PutC(S[I]);
 end;
 
-procedure WriteConsoleF(const Format: AnsiString; const Args: array of PtrUInt);
+procedure WriteConsoleF(const Format: PChar; const Args: array of PtrUInt);
 var
   ArgNo: LongInt;
   I, J: LongInt;
@@ -170,13 +159,13 @@ begin
   SpinLock (3,4,LockConsole);
 
   ArgNo := 0 ;
-  J := 1;
-  while J <= Length(Format) do
+  J := 0;
+  while Format[J] > #0 do
   begin
     if (Format[J] = '%') and (High(Args) <> -1) and (High(Args) >= ArgNo) then
     begin
       Inc(J);
-      if J > Length(Format) then
+      if Format[J] = #0 then
       begin
         LockConsole := 3;
         RestoreInt;
@@ -228,7 +217,7 @@ begin
     if Format[J] = '\' then
     begin
       Inc(J);
-      if J > Length(Format) then
+      if Format[J] = #0 then
       begin
         LockConsole := 3;
         RestoreInt;

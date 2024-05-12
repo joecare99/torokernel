@@ -47,7 +47,7 @@ const
 
 type
   PBlockDriver = ^TBlockDriver;
-  PStorage = ^TStorage;
+  PStorage = ^TPerCPUStorage;
   PFileBlock = ^TFileBlock;
   PFileRegular = ^TFileRegular;
   PSuperBlock = ^TSuperBlock;
@@ -127,10 +127,12 @@ type
     Next: PFileSystemDriver;
   end;
 
-  TStorage = record
+  // PerCPU variables require to be padded to CACHELINE_LEN
+  TPerCPUStorage = record
     BlockFiles : PFileBlock; // Block File Descriptors
     RegularFiles: PFileBlock; // Regular File Decriptors
-    FileSystemMounted: PSuperBlock; // ??? Not sure about it ???
+    FileSystemMounted: PSuperBlock; // Pointer to mounted filesystem
+    Pad: array[1..CACHELINE_LEN-3] of QWORD;
   end;
 
 procedure FileSystemInit;
@@ -152,13 +154,18 @@ function GetInode(Inode: LongInt): PInode;
 procedure PutInode(Inode: PInode);
 function SysCreateFile(Path:  PXChar): THandle;
 
+{$push}
+{$codealign varmin=64}
+var
+  Storages: array[0..MAX_CPU-1] of TPerCPUStorage;
+{$pop}
+
 var
   FileSystemDrivers: PFileSystemDriver;
 
 implementation
 
 var
-  Storages: array [0..MAX_CPU-1] of TStorage; // Dedicated Storage
   BlockDevices: PBlockDriver; // Block Drivers installed
 
 procedure RegisterBlockDriver(Driver: PBlockDriver);
@@ -717,7 +724,6 @@ procedure FileSystemInit;
 var
   I: LongInt;
 begin
-  WriteConsoleF('Loading Virtual FileSystem ...\n',[]);
   for I := 0 to MAX_CPU-1 do
   begin
     Storages[I].BlockFiles := nil;

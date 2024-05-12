@@ -36,16 +36,24 @@ uses
   Arch, VirtIO, Console, Network, Process, Memory;
 
 const
-  VIRTIO_CPU_MAX_PKT_BUF_SIZE = 1024;
+  VIRTIO_CPU_MAX_PKT_SIZE = 1024;
+  VIRTIO_CPU_MAX_PKT_PAYLOAD_SIZE = VIRTIO_CPU_MAX_PKT_SIZE - sizeof(LongInt);
   QUEUE_LEN = 10;
   RX_QUEUE = 0;
 
 type
+  // TODO: to pad this record to the cacheline
   TVirtIOCPU = record
     QueueRx: array[0..MAX_CPU-1] of TVirtQueue;
     QueueTx: array[0..MAX_CPU-1] of TVirtQueue;
     BufferLen: DWORD;
     NrDesc: DWORD;
+  end;
+
+  PVirtIOBusHeader = ^TVirtIOBusHeader;
+  TVirtIOBusHeader = record
+    Len: LongInt;
+    Payload: array[0..VIRTIO_CPU_MAX_PKT_PAYLOAD_SIZE - 1] of Char;
   end;
 
 var
@@ -146,10 +154,24 @@ end;
 procedure SendTo(Core: DWORD; Buffer: Pointer; Len: DWORD);
 var
   tmp: PQueueBuffer;
+  hdr: PVirtIOBusHeader;
   buffer_index: WORD;
 begin
-  tmp := VirtIOGetAvailBuffer(@VirtIOCPUs[GetCoreId].QueueTx[core], buffer_index);
-  Move(Pchar(Buffer)^, Pchar(tmp.address)^, Len);
+  if Len > VIRTIO_CPU_MAX_PKT_PAYLOAD_SIZE then
+    Exit;
+
+  tmp := nil;
+  while True do
+  begin
+    tmp := VirtIOGetAvailBuffer(@VirtIOCPUs[GetCoreId].QueueTx[core], buffer_index);
+    if tmp <> nil then Break;
+    ThreadSwitch;
+  end;
+
+  hdr := Pointer(tmp.address);
+  hdr.Len := Len;
+
+  Move(Pchar(Buffer)^, Pchar(@hdr.PayLoad)^, Len);
   VirtIOAddConsumedBuffer(@VirtIOCPUs[GetCoreId].QueueTx[core], buffer_index, tmp.length);
   // NotifyFrontEnd(Core);
 end;
@@ -159,6 +181,7 @@ var
   index, buffer_index: WORD;
   id, Len: DWORD;
   bi: TBufferInfo;
+  hdr: PVirtIOBusHeader;
   buf: PQueueBuffer;
 begin
   id := GetCoreId;
@@ -172,7 +195,9 @@ begin
   Inc(buf, buffer_index);
   Len := VirtIOCPUs[id].QueueRx[core].used.rings[index].length;
 
-  Move(Pchar(buf.address)^, Pchar(Buffer)^, Len);
+  hdr := Pointer(buf.address);
+
+  Move(Pchar(@hdr.Payload)^, Pchar(Buffer)^, hdr.Len);
 
   bi.size := Len;
   bi.buffer := Pointer(buf.address);
@@ -199,7 +224,7 @@ begin
     begin
       if rxi = cpu then
         Continue;
-      if VirtIOInitQueue(PtrUInt(mmioconf), RX_QUEUE, @VirtIOCPUs[cpu].QueueRx[rxi], QUEUE_LEN, VIRTIO_CPU_MAX_PKT_BUF_SIZE) then
+      if VirtIOInitQueue(PtrUInt(mmioconf), RX_QUEUE, @VirtIOCPUs[cpu].QueueRx[rxi], QUEUE_LEN, VIRTIO_CPU_MAX_PKT_SIZE) then
       begin
         WriteConsoleF('VirtIOBus: Core[%d]->Core[%d] queue has been initiated\n', [rxi, cpu]);
       end;

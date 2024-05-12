@@ -1,4 +1,4 @@
-// MpiReduce.pas
+// MpiBarrier.pas
 //
 // Copyright (c) 2003-2023 Matias Vara <matiasevara@gmail.com>
 // All Rights Reserved
@@ -17,7 +17,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
-program MpiReduce;
+program MpiBarrier;
 
 uses
  Kernel,
@@ -35,7 +35,7 @@ uses
  ToroMPI,
  Console;
 
-{$L MPI_Reduce.o}
+{$L MPI_Barrier.o}
 
 function mainC(param: Pointer): PtrInt; external name 'mainC';
 

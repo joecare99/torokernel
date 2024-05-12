@@ -3,7 +3,7 @@
 // This unit is a simple implementation of the MPI API for Toro unikernel.
 // The functions are defined by following the cdecl ABI so they can be used from a C program.
 //
-// Copyright (c) 2003-2022 Matias Vara <matiasevara@gmail.com>
+// Copyright (c) 2003-2023 Matias Vara <matiasevara@torokernel.io>
 // All Rights Reserved
 //
 // This program is free software: you can redistribute it and/or modify
@@ -37,23 +37,23 @@ uses
 const
   MPI_SUM = 0;
   MPI_MIN = 1;
+  MPI_MAX = 2;
   MPI_COMM_WORLD = 0;
+
+  MinLongInt    = LongInt(Low(LongInt));
 
 function Mpi_Scatter(send_data: Pointer; send_count: LongInt; recv_data: Pointer; var recv_count: LongInt; root: LongInt): LongInt; cdecl;
 function Mpi_Gather(send_data: Pointer; send_count: LongInt; recv_data: Pointer; var recv_count: LongInt; root: LongInt): LongInt; cdecl;
 function Mpi_Reduce(send_data: Pointer; recv_data: Pointer; send_count: LongInt; Operation: Longint; root:LongInt): LongInt; cdecl;
-procedure printf(p: PChar; param: LongInt); cdecl;
+function Mpi_AllReduce(send_data: Pointer; recv_data: Pointer; send_count: LongInt; Operation: Longint; root:LongInt): LongInt; cdecl;
 procedure MPI_Comm_size(value: LongInt; out param: LongInt); cdecl;
 procedure MPI_Comm_rank(value: LongInt; out param: LongInt); cdecl;
 procedure MPI_Barrier(value: LongInt); cdecl;
+function Mpi_Wtime: PtrUInt; cdecl;
 
 implementation
 
-// this is a simple implementation of printf that supports only one parameter
-procedure printf(p: PChar; param: LongInt); cdecl; [public, alias: 'printf'];
-begin
-  WriteConsoleF('%p %d\n', [PtrUInt(p), param]);
-end;
+procedure Mpi_Bcast(data: Pointer; count: LongInt; root: LongInt); cdecl; forward;
 
 procedure MPI_Comm_size(value: LongInt; out param: LongInt); cdecl; [public, alias: 'MPI_Comm_size'];
 begin
@@ -70,7 +70,7 @@ function Mpi_Scatter(send_data: Pointer; send_count: LongInt; recv_data: Pointer
 var
   r, tmp: ^LongInt;
   cpu, len_per_core: LongInt;
-  buff: array[0..VIRTIO_CPU_MAX_PKT_BUF_SIZE-1] of Char;
+  buff: array[0..VIRTIO_CPU_MAX_PKT_PAYLOAD_SIZE - 1] of Char;
 begin
   r := send_data;
   len_per_core := (send_count * sizeof(LongInt)) div CPU_COUNT;
@@ -102,7 +102,7 @@ function Mpi_Gather(send_data: Pointer; send_count: LongInt; recv_data: Pointer;
 var
   r, tmp: ^LongInt;
   cpu, len_per_core: LongInt;
-  buff: array[0..VIRTIO_CPU_MAX_PKT_BUF_SIZE-1] of Char;
+  buff: array[0..VIRTIO_CPU_MAX_PKT_PAYLOAD_SIZE - 1] of Char;
 begin
   r := recv_data;
   len_per_core := send_count * sizeof(LongInt);
@@ -158,23 +158,40 @@ begin
           if ret[j] > s[i * send_count + j] then
             ret[j] := s[i * send_count +j];
       end;
+    end else if Operation = MPI_MAX then
+    begin
+      for j := 0 to send_count -1 do
+      begin
+        ret[j] := MinLongInt;
+        for i := 0 to CPU_COUNT-1 do
+          if ret[j] < s[i * send_count + j] then
+            ret[j] := s[i * send_count +j];
+      end;
     end;
     ToroFreeMem(s);
   end;
 end;
 
+function Mpi_AllReduce(send_data: Pointer; recv_data: Pointer; send_count: LongInt; Operation: Longint; root:LongInt): LongInt; cdecl; [public, alias: 'Mpi_AllReduce'];
+begin
+  Mpi_Reduce(send_data, recv_data, send_count, Operation, root);
+  Mpi_Barrier(MPI_COMM_WORLD);
+  Mpi_Bcast(recv_data, send_count, root);
+end;
+
 var
   CoreCounter: LongInt;
-  globalsense: LongInt = 1;
+  globalsense: Boolean;
+
+Threadvar
+  localsense: Boolean;
 
 // this is a simple counter-based algorithm
+// see https://github.com/yuleihit/Barrier-Synchronization/blob/master/sensereversal_openmp.c
 procedure Mpi_Barrier(value: LongInt); cdecl; [public, alias: 'Mpi_Barrier'];
-var
- localsense: LongInt;
 begin
-  localsense := 2;
   localsense := not localsense;
-  if InterlockedDecrement(CoreCounter) = 1 then
+  if InterlockedDecrement(CoreCounter) = 0 then
   begin
     CoreCounter := CPU_COUNT;
     globalsense := localsense;
@@ -185,9 +202,10 @@ begin
   end;
 end;
 
-procedure Mpi_Bcast(data: Pointer; count: LongInt; root: LongInt);
+// TODO: count must always be less or equal than VIRTIO_CPU_MAX_PKT_BUF_SIZE
+procedure Mpi_Bcast(data: Pointer; count: LongInt; root: LongInt); cdecl; [public, alias: 'Mpi_Bcast'];
 var
-  buff: array[0..VIRTIO_CPU_MAX_PKT_BUF_SIZE-1] of Char;
+  buff: array[0..VIRTIO_CPU_MAX_PKT_PAYLOAD_SIZE - 1] of Char;
   tmp, r: PChar;
   cpu: LongInt;
 begin
@@ -196,14 +214,14 @@ begin
     for cpu:= 0 to CPU_COUNT-1 do
     begin
       if cpu <> root then
-        SendTo(cpu, data, count);
+        SendTo(cpu, data, count * sizeof(LongInt));
     end;
   end else
   begin
     RecvFrom(root, @buff[0]);
     tmp := @buff[0];
     r := data;
-    Move(tmp^, r^, count);
+    Move(tmp^, r^, count * sizeof(LongInt));
   end;
 end;
 
@@ -212,9 +230,10 @@ begin
   SendTo(dest, data, count);
 end;
 
+// TODO: count must be less or equal than VIRTIO_CPU_MAX_PKT_BUF_SIZE
 function Mpi_Recv(data: pointer; count: LongInt; source: LongInt): LongInt;
 var
-  buff: array[0..VIRTIO_CPU_MAX_PKT_BUF_SIZE-1] of Char;
+  buff: array[0..VIRTIO_CPU_MAX_PKT_PAYLOAD_SIZE - 1] of Char;
   r, tmp: PChar;
 begin
   RecvFrom(source, @buff[0]);
@@ -224,7 +243,7 @@ begin
 end;
 
 // This function just returns the rdtsc counter, we should change it for the kvm wallclock
-function Mpi_Wtime: LongInt;
+function Mpi_Wtime: PtrUInt; cdecl; [public, alias: 'Mpi_Wtime'];
 begin
   Result := read_rdtsc;
 end;
